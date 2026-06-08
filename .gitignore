@@ -1,0 +1,36 @@
+# --- Secrets / credentials (never commit) ---
+.env
+*.env
+*.pem
+*.key
+*_token
+*secret*
+.aws/
+.config/gh/
+
+# --- Forensic evidence / case data (never commit raw evidence) ---
+evidence/
+cases/
+*.E01
+*.dd
+*.raw
+*.img
+*.vmem
+*.mem
+*.dmp
+*.aff4
+*.lime
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

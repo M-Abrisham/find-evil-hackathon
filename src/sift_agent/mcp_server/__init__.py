@@ -18,6 +18,19 @@ from .registry import (
     ToolInputError,
     UnknownToolError,
 )
+from .runner import (
+    BINARY_WHITELIST,
+    WHITELISTED_TOOLS,
+    ResolvedTool,
+    RunnerError,
+    ToolArgumentError,
+    ToolNotAllowed,
+    ToolResult,
+    ToolTimeout,
+    ToolUnavailable,
+    inventory,
+    run_tool,
+)
 from .server import ReadOnlyMCPServer, build_server
 from .tools import get_image_info, image_info_spec
 
@@ -32,4 +45,16 @@ __all__ = [
     "ReadOnlyViolation",
     "get_image_info",
     "image_info_spec",
+    # The single vetted subprocess chokepoint (runner.py) + its types.
+    "run_tool",
+    "inventory",
+    "BINARY_WHITELIST",
+    "WHITELISTED_TOOLS",
+    "ResolvedTool",
+    "ToolResult",
+    "RunnerError",
+    "ToolNotAllowed",
+    "ToolUnavailable",
+    "ToolArgumentError",
+    "ToolTimeout",
 ]

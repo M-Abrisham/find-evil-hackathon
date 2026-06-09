@@ -3,9 +3,24 @@
 Day-1 ships exactly ONE stub tool — :func:`get_image_info` — to prove the shape:
 a typed signature, a strictly read-only handler (it only ever *reads* the
 integrity sidecar), and a :class:`~sift_agent.mcp_server.registry.ReadOnlyToolSpec`
-that the server registers. Day-2 adds the real forensic read-only tools
-(``vol``/``fls``/``MFTECmd`` wrappers) the same way, so the no-write guarantees
-in :mod:`sift_agent.mcp_server.registry` hold unchanged.
+that the server registers. :func:`get_image_info` touches no binary at all — it
+opens one JSON sidecar in read mode — so it (correctly) does not import the runner.
+
+Forensic tool wrappers (``vol`` / ``fls`` / ``MFTECmd`` / …) are added the same
+way, with ONE rule: a wrapper that needs to *run a binary* MUST do so through
+:func:`sift_agent.mcp_server.runner.run_tool` — the single vetted subprocess
+chokepoint — never by importing ``subprocess`` here. The AST guard in
+``tests/test_mcp_server.py`` enforces this: any ``subprocess`` / ``os.system`` /
+``os.popen`` outside ``runner.py`` fails the build. The pattern is::
+
+    from .runner import run_tool
+
+    def _handler(image_path: str) -> dict:
+        res = run_tool("fls", ["-r", "-p", image_path])   # argv LIST, shell=False
+        return {"exit_code": res.exit_code, "listing": res.stdout}
+
+so the no-write guarantees in :mod:`sift_agent.mcp_server.registry` hold
+unchanged and every execution still lands in the forensic ledger.
 """
 
 from __future__ import annotations

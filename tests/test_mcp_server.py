@@ -1,14 +1,22 @@
 """Read-only MCP server tests — the guardrail proof.
 
-The headline test (:func:`test_no_shell_or_write_capability_anywhere`) proves the
-WHOLE POINT of this server: there is **no** way to run an arbitrary shell or
-write command through it. It does so three independent ways —
+The headline test (:func:`test_subprocess_is_reachable_only_via_runner`) proves
+the WHOLE POINT of this server: there is **no** way to run an arbitrary shell or
+write command through it. It does so several independent ways —
 
   1. behaviourally  — an ``execute_shell`` / ``run_command`` call is refused;
   2. by interface   — the server object exposes no command/exec/write method;
-  3. by AST scan    — the package source imports nothing that can spawn a shell
-                       (no ``subprocess`` / ``os.system`` / ``eval`` / ``exec`` …)
-                       and every ``open()`` in it is read-only.
+  3. by AST scan    — subprocess is reachable ONLY through the single vetted
+                       chokepoint ``runner.py`` (Day-2's evolution of the old
+                       "no subprocess anywhere" rule); every other file imports
+                       nothing that can spawn a process, no file anywhere reaches
+                       a shell (``shell=True`` / ``os.system`` / ``os.popen`` /
+                       ``eval`` / ``exec`` are forbidden even inside runner.py),
+                       and every ``open()`` in the package is read-only.
+
+The AST scan is itself proven non-vacuous: dedicated self-tests feed the scanner
+a known violation (flagged) and the runner's legitimate pattern (allowed), and
+assert it scanned >0 files and that the runner-only allowance is load-bearing.
 
 The other tests cover the typed read-only stub tool, input typing, the read-only
 registration guard, and telemetry routing.
@@ -184,20 +192,36 @@ def test_registry_refuses_non_readonly_or_write_named_tools():
             reg.register(ReadOnlyToolSpec(bad, "x", {"type": "object"}, lambda: None))
 
 
-# -- the AST proof: the package literally cannot spawn a shell ---------------
-_BANNED_IMPORT_MODULES = {"subprocess", "pty", "commands", "ctypes", "posix"}
-_BANNED_FROM_OS_NAMES = {
+# -- the AST proof: subprocess is reachable ONLY through runner.py -----------
+#
+# Day-1's rule was "no subprocess anywhere in the package". Day-2 needs to run
+# real forensic tools, so the rule EVOLVED to: ``subprocess`` may appear ONLY in
+# ``runner.py`` (the single vetted chokepoint), and even there ``shell=True`` /
+# ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` stay forbidden. Everywhere
+# else, importing or calling ``subprocess`` is still a hard failure. This is a
+# stronger guarantee than "no subprocess": there is exactly one auditable place a
+# process can be spawned, and it cannot reach a shell.
+_RUNNER_BASENAME = "runner.py"
+
+# Process-spawning modules. ``subprocess`` is permitted ONLY in runner.py; the
+# rest are never needed by this package and are banned everywhere (even runner).
+_SUBPROCESS_MODULES = {"subprocess"}
+_ALWAYS_BANNED_MODULES = {"pty", "commands", "ctypes", "posix"}
+
+# os attributes that exec/spawn a process — banned everywhere, even in runner.py.
+_OS_EXEC_NAMES = {
     "system", "popen", "fork", "forkpty", "spawnl", "spawnle", "spawnlp", "spawnlpe",
     "spawnv", "spawnve", "spawnvp", "spawnvpe", "execl", "execle", "execlp", "execlpe",
     "execv", "execve", "execvp", "execvpe", "posix_spawn", "posix_spawnp",
 }
+# Attribute calls that spawn a *shell* regardless of the receiving object — banned
+# everywhere, runner included (covers os.system/os.popen and subprocess.getoutput).
+_SHELLISH_ATTRS = {"system", "popen", "getoutput", "getstatusoutput"} | _OS_EXEC_NAMES
 _BANNED_NAME_CALLS = {"eval", "exec", "compile", "__import__"}
-_BANNED_ATTR_CALLS = {
-    "system", "popen", "Popen", "getoutput", "getstatusoutput",
-    "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp",
-    "spawnvpe", "execl", "execle", "execlp", "execlpe", "execv", "execve",
-    "execvp", "execvpe", "fork", "forkpty", "posix_spawn", "posix_spawnp",
-}
+# Dynamic-import escape hatches — banned everywhere (even runner.py), so the
+# "subprocess only via runner" guarantee can't be dodged with
+# ``importlib.import_module("subprocess")``. ``__import__`` is covered above.
+_BANNED_DYNAMIC = {"import_module"}
 _READ_MODES = {"r", "rb", "rt", "br", "tr", "rU"}
 
 
@@ -213,52 +237,189 @@ def _package_py_files():
     return files
 
 
-def _scan_offenses(path):
-    with open(path, "r", encoding="utf-8") as fh:
-        tree = ast.parse(fh.read(), filename=path)
+def _open_mode(node):
+    """Extract the literal mode passed to an ``open(...)`` call, if any."""
+    mode = None
+    if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+        mode = node.args[1].value
+    for kw in node.keywords:
+        if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
+            mode = kw.value.value
+    return mode
+
+
+def _scan_source(src, filename="<source>", *, allow_subprocess):
+    """Return a list of shell/write-capability offenses in ``src``.
+
+    ``allow_subprocess`` is ``True`` only for ``runner.py``: there, importing and
+    calling ``subprocess`` is allowed, but ``shell=True``, ``os.system``,
+    ``os.popen``, ``*.getoutput``, ``eval``/``exec`` and friends are STILL
+    flagged. With ``allow_subprocess=False`` (every other file) any ``subprocess``
+    use is also an offense.
+    """
+    tree = ast.parse(src, filename=filename)
     offenses = []
+    subprocess_aliases = set()        # names bound to the subprocess module here
+    subprocess_imported_names = set()  # `from subprocess import run` -> {"run"}
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.split(".")[0] in _BANNED_IMPORT_MODULES:
+                top = alias.name.split(".")[0]
+                if top in _SUBPROCESS_MODULES:
+                    subprocess_aliases.add(alias.asname or top)
+                    if not allow_subprocess:
+                        offenses.append(f"import {alias.name}")
+                elif top in _ALWAYS_BANNED_MODULES:
                     offenses.append(f"import {alias.name}")
         elif isinstance(node, ast.ImportFrom):
             mod = (node.module or "").split(".")[0]
-            if mod in _BANNED_IMPORT_MODULES:
-                offenses.append(f"from {node.module} import ...")
-            if mod == "os":
+            if mod in _SUBPROCESS_MODULES:
                 for alias in node.names:
-                    if alias.name in _BANNED_FROM_OS_NAMES:
+                    subprocess_imported_names.add(alias.asname or alias.name)
+                if not allow_subprocess:
+                    offenses.append(f"from {node.module} import ...")
+            elif mod in _ALWAYS_BANNED_MODULES:
+                offenses.append(f"from {node.module} import ...")
+            elif mod == "os":
+                for alias in node.names:
+                    if alias.name in _OS_EXEC_NAMES:
                         offenses.append(f"from os import {alias.name}")
         elif isinstance(node, ast.Call):
             func = node.func
+            # A shell is forbidden EVERYWHERE, including runner.py. The ONLY
+            # acceptable form is the literal ``shell=False``: a variable /
+            # parameter / global (``shell=enable_shell``) could hold True at
+            # runtime and would otherwise sail past this guard inside runner.py,
+            # so anything that is not literally ``False`` is an offense.
+            for kw in node.keywords:
+                if kw.arg == "shell":
+                    is_literal_false = (
+                        isinstance(kw.value, ast.Constant) and kw.value.value is False
+                    )
+                    if not is_literal_false:
+                        offenses.append("shell= (not literal False)")
             if isinstance(func, ast.Name):
-                if func.id in _BANNED_NAME_CALLS:
+                if func.id in _BANNED_NAME_CALLS or func.id in _BANNED_DYNAMIC:
                     offenses.append(f"call {func.id}()")
+                if (not allow_subprocess) and func.id in subprocess_imported_names:
+                    offenses.append(f"call {func.id}() (subprocess)")
                 if func.id == "open":  # enforce read-only opens
-                    mode = None
-                    if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
-                        mode = node.args[1].value
-                    for kw in node.keywords:
-                        if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
-                            mode = kw.value.value
+                    mode = _open_mode(node)
                     if mode is not None and mode not in _READ_MODES:
                         offenses.append(f"open(mode={mode!r}) — not read-only")
             elif isinstance(func, ast.Attribute):
-                if func.attr in _BANNED_ATTR_CALLS:
+                recv = func.value.id if isinstance(func.value, ast.Name) else None
+                if func.attr in _SHELLISH_ATTRS or func.attr in _BANNED_DYNAMIC:
                     offenses.append(f"call .{func.attr}()")
+                elif recv in subprocess_aliases and not allow_subprocess:
+                    offenses.append(f"call {recv}.{func.attr}() (subprocess)")
     return offenses
 
 
-def test_package_source_has_no_shell_or_write_capability():
+def _scan_offenses(path, *, allow_subprocess):
+    with open(path, "r", encoding="utf-8") as fh:
+        return _scan_source(
+            fh.read(), os.path.basename(path), allow_subprocess=allow_subprocess
+        )
+
+
+def test_subprocess_is_reachable_only_via_runner():
+    """No file but runner.py may import/call subprocess; none may reach a shell."""
     files = _package_py_files()
     assert files, "no package source found to scan"
-    all_offenses = {}
+    # Guard against a bad glob silently scanning nothing.
+    assert len(files) >= 4, f"expected to scan the whole package, got {files}"
+    basenames = {os.path.basename(f) for f in files}
+    assert _RUNNER_BASENAME in basenames, "runner.py must exist and be scanned"
+
+    offenders = {}
     for f in files:
-        off = _scan_offenses(f)
+        allow = os.path.basename(f) == _RUNNER_BASENAME
+        off = _scan_offenses(f, allow_subprocess=allow)
         if off:
-            all_offenses[os.path.basename(f)] = off
-    assert not all_offenses, f"shell/write capability found in package: {all_offenses}"
+            offenders[os.path.basename(f)] = off
+    assert not offenders, f"shell/subprocess capability found outside runner: {offenders}"
+
+
+def test_runner_allowance_is_load_bearing():
+    """runner.py really DOES use subprocess — so the exception isn't vacuous."""
+    runner = [f for f in _package_py_files() if os.path.basename(f) == _RUNNER_BASENAME]
+    assert len(runner) == 1, "exactly one runner.py expected"
+    # With the runner allowance it is clean; without it, the SAME file is flagged
+    # (because it genuinely contains subprocess) — proving the gate does real work.
+    assert _scan_offenses(runner[0], allow_subprocess=True) == []
+    assert _scan_offenses(runner[0], allow_subprocess=False), (
+        "runner.py should contain subprocess; if it doesn't, the runner-only "
+        "allowance is rubber-stamping an empty exception"
+    )
+
+
+# -- non-vacuous scanner self-tests: prove the scanner actually fires ---------
+_VIOLATION_SRC = (
+    "import subprocess\n"
+    "import os\n"
+    "def go(cmd):\n"
+    "    subprocess.run(cmd, shell=True)\n"
+    "    os.system(cmd)\n"
+)
+_RUNNER_LEGIT_SRC = (
+    "import subprocess\n"
+    "def go(argv):\n"
+    "    return subprocess.run(\n"
+    "        argv, shell=False, capture_output=True, text=True, timeout=5\n"
+    "    )\n"
+)
+
+
+def test_scanner_flags_violations_even_with_runner_allowance():
+    # As an ordinary package file (subprocess NOT allowed): everything is caught.
+    off = _scan_source(_VIOLATION_SRC, "tools.py", allow_subprocess=False)
+    assert any("import subprocess" in o for o in off)
+    assert any(o.startswith("shell=") for o in off)
+    assert any(".system()" in o for o in off)
+    assert any("(subprocess)" in o for o in off)
+    # Even WITH the runner allowance, a shell and os.system stay forbidden.
+    off_runner = _scan_source(_VIOLATION_SRC, "runner.py", allow_subprocess=True)
+    assert any(o.startswith("shell=") for o in off_runner)
+    assert any(".system()" in o for o in off_runner)
+
+
+def test_scanner_rejects_non_literal_shell_argument():
+    # Closing the AST blind spot an adversarial review found: a non-literal
+    # shell= value (variable / parameter / global) could hold True at runtime, so
+    # the ONLY accepted form is the literal shell=False — even inside runner.py.
+    for bad in (
+        "import subprocess\ndef go(argv, enable_shell=False):\n"
+        "    return subprocess.run(argv, shell=enable_shell)\n",
+        "import subprocess\n_SHELL = True\ndef go(argv):\n"
+        "    return subprocess.run(argv, shell=_SHELL)\n",
+        "import subprocess\ndef go(argv):\n    return subprocess.run(argv, shell=1)\n",
+    ):
+        assert any(o.startswith("shell=") for o in
+                   _scan_source(bad, "runner.py", allow_subprocess=True)), bad
+    # The literal shell=False remains the one allowed form.
+    ok = "import subprocess\ndef go(argv):\n    return subprocess.run(argv, shell=False)\n"
+    assert _scan_source(ok, "runner.py", allow_subprocess=True) == []
+
+
+def test_scanner_allows_runner_legit_pattern_only_in_runner():
+    # The runner's real pattern (argv list, shell=False) is clean in runner.py.
+    assert _scan_source(_RUNNER_LEGIT_SRC, "runner.py", allow_subprocess=True) == []
+    # The very same code in a non-runner file IS a violation (import + call).
+    off = _scan_source(_RUNNER_LEGIT_SRC, "tools.py", allow_subprocess=False)
+    assert off, "subprocess use outside runner.py must be flagged"
+
+
+def test_scanner_closes_dynamic_import_escape_hatch():
+    # importlib.import_module / __import__ can't be used to dodge the subprocess
+    # ban — flagged even WITH the runner allowance.
+    for src in (
+        "import importlib\ndef go():\n    return importlib.import_module('subprocess')\n",
+        "def go():\n    return __import__('subprocess')\n",
+    ):
+        assert _scan_source(src, "runner.py", allow_subprocess=True), src
+        assert _scan_source(src, "tools.py", allow_subprocess=False), src
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,19 @@ tools.jsonl.orig.sha256
 # Code lives in src/sift_agent/scorer.py; the corrections FILE is never committed.
 corrections.jsonl
 
+# Per-case SQLite evidence store — holds case data / PII (artifact paths, IPs,
+# hashes), written per-case OUTSIDE the repo. Code lives in
+# src/sift_agent/store.py; the DB FILE and its WAL sidecars are never committed.
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.db-wal
+*.db-shm
+
 # --- HHEM-2.1 over-reach model weights (~600 MB) — fetched ONCE, NEVER committed ---
 # Air-gapped inference reads from this local HF cache. Reproduce it with:
 #   python3 scripts/fetch_hhem.py      (the only step that touches the network)

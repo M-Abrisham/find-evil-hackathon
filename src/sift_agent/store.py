@@ -93,6 +93,11 @@ __all__ = [
     "connect",
     "init_store",
     "compute_root_sha256",
+    "QUERYABLE_COLUMNS",
+    "RETURN_COLUMNS",
+    "MAX_LIMIT",
+    "connect_readonly",
+    "query_store",
 ]
 
 # =============================================================================
@@ -374,4 +379,181 @@ def init_store(
         conn.commit()
     finally:
         conn.close()
+    return _resolve_path(db_path)
+
+
+# =============================================================================
+# Read path — query_store(): the agent's ONLY read into the store.
+# Capped, paginated, read-only BY CONSTRUCTION (mode=ro), traceable rows out.
+# The agent never writes raw SQL: filter keys are checked against a WHITELIST of
+# real columns and all values are BOUND as parameters, so a filter can only ever
+# narrow a SELECT over `rows` — it can never inject SQL or reach another table.
+# =============================================================================
+#: Columns a caller may filter on (equality, ``IN [..]``, or — for ``ts`` — the
+#: ``ts_from`` / ``ts_to`` range keys). EXACTLY the `rows` pivot columns; any
+#: other filter key is rejected. These names are the ONLY caller-influenced text
+#: that reaches SQL, and only after membership in this fixed tuple is confirmed.
+QUERYABLE_COLUMNS = (
+    "artifact_type", "evidence_source", "proc", "pid", "path", "sha256", "ip", "ts",
+)
+
+#: The ``ts`` range filter keys (mapped to ``ts >= ?`` / ``ts <= ?``).
+_RANGE_KEYS = {"ts_from": ">=", "ts_to": "<="}
+
+#: Columns every returned row carries. The traceability quartet
+#: (``native_locator`` + ``byte_start`` + ``byte_len`` + ``receipt_id``) is
+#: ALWAYS present so the caller / Day-3 verifier can trace and re-check the row.
+#: Raw captured bytes are deliberately NOT returned — the verifier reads the
+#: byte_range from the capture file separately, keeping this payload bounded.
+RETURN_COLUMNS = (
+    "row_id", "artifact_type", "evidence_source", "native_locator", "capture_id",
+    "byte_start", "byte_len", "receipt_id", "proc", "pid", "path", "sha256", "ip", "ts",
+)
+
+#: Hard ceiling on a page size — a context-window guard. A caller asking for more
+#: is REJECTED, never silently truncated.
+MAX_LIMIT = 50
+
+
+def _resolve_path(db_path: str | None) -> str:
+    """Resolve ``db_path`` → ``STORE_PATH`` env → :data:`DEFAULT_STORE_PATH`, ``~``-expanded."""
     return os.path.expanduser(db_path or os.environ.get("STORE_PATH") or DEFAULT_STORE_PATH)
+
+
+def connect_readonly(db_path: str | None = None) -> sqlite3.Connection:
+    """Open the store READ-ONLY by construction — the read path's architectural guardrail.
+
+    Uses SQLite's ``file:...?mode=ro`` URI so the connection opens the database
+    file ``O_RDONLY``: any ``INSERT`` / ``UPDATE`` / ``DELETE`` / ``CREATE`` on it
+    raises ``sqlite3.OperationalError`` ("attempt to write a readonly database").
+    This is the same no-mutation philosophy as the MCP no-shell read path: the
+    agent's read handle PHYSICALLY cannot modify evidence-derived rows.
+
+    Unlike :func:`connect`, this does NOT create the file or its parent — a
+    read-only path must never bring a store into existence. ``busy_timeout`` is
+    still applied (a connection-local setting, no write) for polite concurrency.
+    """
+    path = _resolve_path(db_path)
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+    return conn
+
+
+def _build_where(filters):
+    """Translate a ``filters`` dict into a parameterised ``WHERE`` over `rows`.
+
+    Returns ``(clauses, params)``. Each filter key MUST be a whitelisted pivot
+    column (equality / membership) or a ``ts`` range key (``ts_from`` / ``ts_to``);
+    any other key raises :class:`ValueError`. A list/tuple/set value becomes
+    ``col IN (?, …)`` (empty rejected); a scalar becomes ``col = ?`` (or
+    ``col IS NULL`` for ``None``, so a null-seeking filter doesn't silently match
+    nothing). Column names come ONLY from the fixed whitelists; values are always
+    bound — the caller can never inject SQL.
+    """
+    if not isinstance(filters, dict):
+        raise ValueError(f"filters must be a dict, got {type(filters).__name__}")
+    clauses: list[str] = []
+    params: list = []
+    for key, val in filters.items():
+        if key in QUERYABLE_COLUMNS:
+            if isinstance(val, (list, tuple, set)):
+                values = list(val)
+                if not values:
+                    raise ValueError(f"filter {key!r}: empty membership list matches nothing")
+                clauses.append(f"{key} IN ({','.join('?' * len(values))})")
+                params.extend(values)
+            elif val is None:
+                clauses.append(f"{key} IS NULL")
+            else:
+                clauses.append(f"{key} = ?")
+                params.append(val)
+        elif key in _RANGE_KEYS:
+            clauses.append(f"ts {_RANGE_KEYS[key]} ?")
+            params.append(val)
+        else:
+            allowed = ", ".join(sorted(QUERYABLE_COLUMNS) + sorted(_RANGE_KEYS))
+            raise ValueError(f"unknown filter key {key!r}; allowed: {allowed}")
+    return clauses, params
+
+
+def query_store(
+    filters: dict,
+    *,
+    limit: int = 50,
+    cursor: int | None = None,
+    db_path: str | None = None,
+) -> dict:
+    """The agent's ONLY read into the per-case store: capped, paginated, traceable.
+
+    Parameters
+    ----------
+    filters : dict
+        Whitelisted-column predicates (see :func:`_build_where`). ``{}`` matches all.
+    limit : int
+        Page size, 1..:data:`MAX_LIMIT`. Out of range RAISES :class:`ValueError`
+        — the cap is never silently exceeded (context-window guard).
+    cursor : int | None
+        KEYSET cursor = the last ``row_id`` seen. ``None`` for the first page.
+    db_path : str | None
+        Store path (resolved like :func:`connect`); opened READ-ONLY.
+
+    Returns
+    -------
+    dict
+        ``{"rows": [...], "total_count": int, "returned": int, "truncated": bool,
+        "next_cursor": int|None}``. ``rows`` are dicts over :data:`RETURN_COLUMNS`
+        (each carries the traceability quartet). ``total_count`` is the full match
+        count ignoring paging; ``truncated`` is True iff more pages remain;
+        ``next_cursor`` is this page's last ``row_id`` when more remain, else None.
+
+    Pagination is KEYSET (``WHERE row_id > cursor ORDER BY row_id``), not OFFSET,
+    so it stays O(page) and visits every matching row exactly once with no
+    duplicates or gaps even as the page advances.
+    """
+    if isinstance(limit, bool) or not isinstance(limit, int) or not (1 <= limit <= MAX_LIMIT):
+        raise ValueError(f"limit must be an int in 1..{MAX_LIMIT}, got {limit!r}")
+    if cursor is not None and (isinstance(cursor, bool) or not isinstance(cursor, int)):
+        raise ValueError(f"cursor must be an int row_id or None, got {cursor!r}")
+
+    clauses, params = _build_where(filters)
+    where_sql = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    conn = connect_readonly(db_path)
+    try:
+        # total_count: the full filter match, IGNORING paging.
+        total_count = conn.execute(
+            f"SELECT COUNT(*) FROM rows{where_sql}", params
+        ).fetchone()[0]
+
+        # Page via keyset. Fetch limit+1 to detect whether another page exists
+        # without a second COUNT and regardless of the cursor position.
+        page_clauses = list(clauses)
+        page_params = list(params)
+        if cursor is not None:
+            page_clauses.append("row_id > ?")
+            page_params.append(cursor)
+        page_where = (" WHERE " + " AND ".join(page_clauses)) if page_clauses else ""
+        page_params.append(limit + 1)
+        fetched = conn.execute(
+            f"SELECT {', '.join(RETURN_COLUMNS)} FROM rows{page_where} "
+            f"ORDER BY row_id LIMIT ?",
+            page_params,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    truncated = len(fetched) > limit
+    page = fetched[:limit]
+    rows = [dict(zip(RETURN_COLUMNS, r)) for r in page]
+    # next_cursor = this page's last row_id when more pages remain, else None.
+    # truncated implies len(fetched) >= limit+1 >= 2, so `page` is a full,
+    # non-empty page — page[-1] is always safe here.
+    next_cursor = page[-1][0] if truncated else None
+
+    return {
+        "rows": rows,
+        "total_count": total_count,
+        "returned": len(rows),
+        "truncated": truncated,
+        "next_cursor": next_cursor,
+    }

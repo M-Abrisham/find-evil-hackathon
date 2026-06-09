@@ -24,6 +24,10 @@ from sift_agent.finding import CREATED_TS_RE  # cross-module timestamp-shape che
 from sift_agent.store import (
     SCHEMA_VERSION,
     StoreError,
+    add_capture,
+    add_capture_from_file,
+    add_chunk,
+    add_row,
     compute_root_sha256,
     connect,
     init_store,
@@ -411,3 +415,102 @@ def test_conflicting_case_rebind_rejected(tmp_path):
     init_store(path, case_id="Rocba")
     with pytest.raises(StoreError, match="re-bind|case_id"):
         init_store(path, case_id="SomeOtherCase")
+
+
+# =============================================================================
+# Writer helpers (add_capture / add_chunk / add_row / add_capture_from_file).
+# The point of these tests is that the convenience writers are THIN: they go
+# through the SAME DB guardrail, so they cannot insert an un-traceable row.
+# =============================================================================
+def test_writer_helpers_happy_path(tmp_path):
+    """add_capture + add_chunk + add_row write a valid capture/chunks/row, return
+    ids, and the stored row carries the traceability quartet intact."""
+    path = _fresh(tmp_path)
+    with closing(connect(path)) as conn:
+        cid = add_capture(
+            conn, source_tool="vol", receipt_id=RECEIPT_ID,
+            capture_path="/home/ubuntu/josh/cases/Rocba/index/captures/vol-pslist.txt",
+            total_bytes=TOTAL_BYTES, segment_size=SEGMENT_SIZE, root_sha256=ROOT,
+        )
+        assert isinstance(cid, int)
+        add_chunk(conn, cid, 0, 0, 100, H0)
+        add_chunk(conn, cid, 1, 100, 50, H1)
+        rid = add_row(conn, **_valid_row(cid))
+        conn.commit()
+
+        assert isinstance(rid, int)
+        # The traceability quartet round-trips exactly as written.
+        nl, bs, bl, rcpt, got_cid = conn.execute(
+            "SELECT native_locator, byte_start, byte_len, receipt_id, capture_id "
+            "FROM rows WHERE row_id = ?", (rid,),
+        ).fetchone()
+        v = _valid_row(cid)
+        assert (nl, bs, bl, rcpt, got_cid) == (
+            v["native_locator"], v["byte_start"], v["byte_len"], v["receipt_id"], cid,
+        )
+
+
+def test_add_row_helper_cannot_bypass_guardrail(tmp_path):
+    """The convenience writer is NOT a back door: a row that can't be traced is
+    rejected by the DB even when inserted via add_row() (constraint #2)."""
+    path = _fresh(tmp_path)
+    with closing(connect(path)) as conn:
+        cid = _capture_with_two_chunks(conn)
+        with pytest.raises(sqlite3.IntegrityError, match=r"NOT NULL.*rows\.native_locator"):
+            add_row(conn, **_valid_row(cid, native_locator=None))
+        with pytest.raises(sqlite3.IntegrityError, match=r"byte_len > 0"):
+            add_row(conn, **_valid_row(cid, byte_len=0))
+        with pytest.raises(sqlite3.IntegrityError, match=r"length\(sha256\)=64"):
+            add_row(conn, **_valid_row(cid, sha256="a" * 63))
+        with pytest.raises(sqlite3.IntegrityError, match=r"evidence_source IN"):
+            add_row(conn, **_valid_row(cid, evidence_source="network"))
+        with pytest.raises(sqlite3.IntegrityError, match=r"FOREIGN KEY constraint failed"):
+            add_row(conn, **_valid_row(999_999))  # orphan capture_id
+
+
+def test_add_capture_from_file_segments_hashes_and_stores(tmp_path):
+    """add_capture_from_file reads a capture FILE, segments it, leaf-hashes each
+    chunk, and stores capture + chunks whose offsets/lengths/hashes/root match an
+    INDEPENDENT computation — and the file-derived chunks resolve byte ranges."""
+    cap = tmp_path / "vol-pslist.txt"
+    cap.write_bytes(_SEG0 + _SEG1)  # 100 'A' + 50 'B' = 150 bytes
+    path = _fresh(tmp_path)
+    with closing(connect(path)) as conn:
+        cid = add_capture_from_file(
+            conn, str(cap), source_tool="vol", receipt_id=RECEIPT_ID,
+            tool_version="2.28.0", segment_size=100,
+        )
+        conn.commit()
+
+        cap_row = conn.execute(
+            "SELECT total_bytes, segment_size, root_sha256, capture_path "
+            "FROM captures WHERE capture_id = ?", (cid,),
+        ).fetchone()
+        assert cap_row == (150, 100, ROOT, str(cap))  # root == independent ROOT
+        chunks = conn.execute(
+            "SELECT seq, offset, length, sha256 FROM capture_chunks "
+            "WHERE capture_id = ? ORDER BY seq", (cid,),
+        ).fetchall()
+        assert chunks == [(0, 0, 100, H0), (1, 100, 50, H1)]
+        # The leaves the helper wrote re-derive the stored root.
+        assert compute_root_sha256([c[3] for c in chunks]) == ROOT
+        # And the file-derived chunks answer the verifier's byte_range lookup.
+        assert _chunks_for_range(conn, cid, 120, 140) == [1]
+        assert _chunks_for_range(conn, cid, 90, 110) == [0, 1]
+
+
+def test_add_capture_from_file_rejects_empty_and_bad_segment(tmp_path):
+    """A zero-byte capture has no leaf to cite and no well-defined root, and a
+    non-positive segment size is nonsensical — both fail loud, not silently."""
+    path = _fresh(tmp_path)
+    empty = tmp_path / "empty.txt"
+    empty.write_bytes(b"")
+    nonempty = tmp_path / "x.txt"
+    nonempty.write_bytes(b"data")
+    with closing(connect(path)) as conn:
+        with pytest.raises(StoreError, match="empty"):
+            add_capture_from_file(conn, str(empty), source_tool="vol", receipt_id=RECEIPT_ID)
+        with pytest.raises(StoreError, match="segment_size"):
+            add_capture_from_file(
+                conn, str(nonempty), source_tool="vol", receipt_id=RECEIPT_ID, segment_size=0,
+            )

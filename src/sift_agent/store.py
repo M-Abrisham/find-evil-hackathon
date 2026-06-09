@@ -79,6 +79,7 @@ re-bound: re-seeding with a *different* non-null value raises.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import sqlite3
@@ -93,6 +94,11 @@ __all__ = [
     "connect",
     "init_store",
     "compute_root_sha256",
+    "DEFAULT_SEGMENT_SIZE",
+    "add_capture",
+    "add_chunk",
+    "add_row",
+    "add_capture_from_file",
     "QUERYABLE_COLUMNS",
     "RETURN_COLUMNS",
     "MAX_LIMIT",
@@ -380,6 +386,190 @@ def init_store(
     finally:
         conn.close()
     return _resolve_path(db_path)
+
+
+# =============================================================================
+# Writer helpers — the thin INSERT primitives build_index and the tool wrappers
+# use to WRITE evidence into the store. They are deliberately THIN: they bind
+# values and let the schema's NOT NULL / CHECK / FOREIGN KEY constraints do the
+# rejecting. They do NO Python-side validation ON PURPOSE — moving the checks
+# into Python would relocate the traceability guarantee OUT of the DB, so a
+# careless caller could bypass it. Keeping them thin means even a convenience
+# writer cannot slip an un-traceable row past the guardrail (constraint #2).
+# None of them commit: the CALLER owns the transaction so a capture, its chunks,
+# and its rows can be written atomically (or rolled back together on error).
+# =============================================================================
+
+#: Default capture segment size (bytes) — the leaf granularity the Day-3 verifier
+#: re-hashes. 1 MiB keeps the leaf count small for typical tool outputs while
+#: still localising a citation to a ~1 MiB window. Overridable per capture.
+DEFAULT_SEGMENT_SIZE = 1 << 20  # 1048576
+
+
+def add_capture(
+    conn: sqlite3.Connection,
+    *,
+    source_tool: str,
+    receipt_id: str,
+    capture_path: str,
+    total_bytes: int,
+    segment_size: int,
+    root_sha256: str,
+    tool_version: str | None = None,
+    created_utc: str | None = None,
+) -> int:
+    """Insert one ``captures`` row; return its ``capture_id``.
+
+    A thin INSERT wrapper — the DB's NOT NULL columns reject a missing required
+    field. ``created_utc`` defaults to now in the canonical ``...Z`` shape.
+    Does NOT commit.
+    """
+    cur = conn.execute(
+        "INSERT INTO captures(source_tool, tool_version, receipt_id, capture_path, "
+        "total_bytes, segment_size, root_sha256, created_utc) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            source_tool, tool_version, receipt_id, capture_path,
+            total_bytes, segment_size, root_sha256, created_utc or _utc_now_z(),
+        ),
+    )
+    return cur.lastrowid
+
+
+def add_chunk(
+    conn: sqlite3.Connection,
+    capture_id: int,
+    seq: int,
+    offset: int,
+    length: int,
+    sha256: str,
+) -> None:
+    """Insert one ``capture_chunks`` leaf. Thin wrapper; does NOT commit.
+
+    ``CHECK(length > 0)`` rejects a zero-length leaf, the ``(capture_id, seq)``
+    primary key rejects a duplicate, and the FK rejects an orphan ``capture_id``
+    (under ``foreign_keys=ON``) — all at the DB level.
+    """
+    conn.execute(
+        "INSERT INTO capture_chunks(capture_id, seq, offset, length, sha256) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (capture_id, seq, offset, length, sha256),
+    )
+
+
+#: The `rows` columns :func:`add_row` binds, in INSERT order. The traceability
+#: quartet (``native_locator`` / ``byte_start`` / ``byte_len`` / ``receipt_id``)
+#: is NOT NULL in the schema, so omitting one is a DB rejection, not a silent gap.
+_ROW_INSERT_COLUMNS = (
+    "artifact_type", "evidence_source", "native_locator", "capture_id",
+    "byte_start", "byte_len", "receipt_id", "proc", "pid", "path",
+    "sha256", "ip", "ts",
+)
+
+
+def add_row(
+    conn: sqlite3.Connection,
+    *,
+    artifact_type: str,
+    evidence_source: str,
+    native_locator: str,
+    capture_id: int,
+    byte_start: int,
+    byte_len: int,
+    receipt_id: str,
+    proc: str | None = None,
+    pid: int | None = None,
+    path: str | None = None,
+    sha256: str | None = None,
+    ip: str | None = None,
+    ts: str | None = None,
+) -> int:
+    """Insert one evidence ``rows`` fact; return its ``row_id``.
+
+    A thin INSERT wrapper that does NO Python-side validation ON PURPOSE: the
+    traceability guarantee is STRUCTURAL, enforced by the schema. A row with a
+    NULL ``native_locator``, a zero ``byte_len``, a malformed ``sha256``, an
+    unknown ``evidence_source``, or an orphan ``capture_id`` is rejected by the
+    DB (``sqlite3.IntegrityError``) — this convenience writer CANNOT bypass the
+    guardrail. The 6 pivot columns are optional. Does NOT commit.
+    """
+    cur = conn.execute(
+        f"INSERT INTO rows({','.join(_ROW_INSERT_COLUMNS)}) "
+        f"VALUES ({','.join('?' * len(_ROW_INSERT_COLUMNS))})",
+        (
+            artifact_type, evidence_source, native_locator, capture_id,
+            byte_start, byte_len, receipt_id, proc, pid, path, sha256, ip, ts,
+        ),
+    )
+    return cur.lastrowid
+
+
+def add_capture_from_file(
+    conn: sqlite3.Connection,
+    capture_path: str,
+    *,
+    source_tool: str,
+    receipt_id: str,
+    tool_version: str | None = None,
+    segment_size: int = DEFAULT_SEGMENT_SIZE,
+    created_utc: str | None = None,
+) -> int:
+    """Segment a captured tool-output FILE into leaf chunks, hash each, write the
+    capture + its leaves, and return the ``capture_id``.
+
+    This is the chunk-hashing helper the verifier's contract depends on. It reads
+    ``capture_path`` — the captured *tool output* the agent saw, NOT the evidence
+    image (this module never reads evidence) — in ``segment_size``-byte leaves,
+    computing each leaf's lowercase-hex SHA-256. The capture's ``root_sha256`` is
+    :func:`compute_root_sha256` over those leaves in ``seq`` order;
+    ``total_bytes`` is the file size. Writes one ``captures`` row and one
+    ``capture_chunks`` row per leaf via :func:`add_capture` / :func:`add_chunk`.
+    The file is streamed a segment at a time, so memory stays bounded regardless
+    of capture size. Does NOT commit (caller owns the txn).
+
+    The single-level root (``sha256`` over concatenated leaf digests) is the
+    agreed contract TODAY; a full multi-level Merkle tree is future work (see the
+    module docstring).
+
+    Raises
+    ------
+    StoreError
+        If ``segment_size`` is not positive, or if the file is empty — a capture
+        must have >=1 leaf chunk (:func:`compute_root_sha256` rejects zero
+        leaves), so a zero-byte capture is refused loudly rather than stored with
+        an ambiguous empty-input root.
+    """
+    if segment_size <= 0:
+        raise StoreError(f"segment_size must be positive, got {segment_size!r}")
+    leaves: list[tuple[int, int, int, str]] = []  # (seq, offset, length, hexdigest)
+    offset = 0
+    with open(capture_path, "rb") as fh:
+        for seq in itertools.count():
+            block = fh.read(segment_size)
+            if not block:
+                break
+            leaves.append((seq, offset, len(block), hashlib.sha256(block).hexdigest()))
+            offset += len(block)
+    if not leaves:
+        raise StoreError(
+            f"capture file {capture_path!r} is empty; a capture must have >=1 "
+            "leaf chunk (refusing to store a zero-byte, un-citable capture)"
+        )
+    root = compute_root_sha256([hexdigest for (_, _, _, hexdigest) in leaves])
+    capture_id = add_capture(
+        conn,
+        source_tool=source_tool,
+        tool_version=tool_version,
+        receipt_id=receipt_id,
+        capture_path=capture_path,
+        total_bytes=offset,
+        segment_size=segment_size,
+        root_sha256=root,
+        created_utc=created_utc,
+    )
+    for seq, off, length, hexdigest in leaves:
+        add_chunk(conn, capture_id, seq, off, length, hexdigest)
+    return capture_id
 
 
 # =============================================================================

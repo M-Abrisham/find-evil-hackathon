@@ -11,6 +11,26 @@
 # --- Forensic evidence / case data (never commit raw evidence) ---
 evidence/
 cases/
+
+# Runtime provenance ledger — holds case data / PII, written per-case.
+# Code lives in src/sift_agent/ledger.py; the ledger FILE is never committed.
+receipts.jsonl
+*.chain.jsonl
+tools.jsonl.orig.sha256
+
+# Skeptic queue of over-reach flags — holds finding/case data, written per-case.
+# Code lives in src/sift_agent/scorer.py; the corrections FILE is never committed.
+corrections.jsonl
+
+# --- HHEM-2.1 over-reach model weights (~600 MB) — fetched ONCE, NEVER committed ---
+# Air-gapped inference reads from this local HF cache. Reproduce it with:
+#   python3 scripts/fetch_hhem.py      (the only step that touches the network)
+# See README.md "Try It Out". Pinned revisions live in docs/contribution-table.md.
+models/
+
+# Runtime analysis output dir (scratch CSV/JSON/logs, fetched model card, etc.).
+analysis/
+
 *.E01
 *.dd
 *.raw

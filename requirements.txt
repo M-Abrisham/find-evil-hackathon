@@ -1,0 +1,30 @@
+# --- Reused dependency (pinned by exact commit; NOT vendored) ----------------
+# Na0S supplies the cost / audit / rate-limit primitives wrapped by
+# src/sift_agent/telemetry.py. Pinned to the exact commit recorded in
+# docs/contribution-table.md.
+na0s @ git+https://github.com/M-Abrisham/Na0S@a8751167db7b67fcbdacdc1196cfc0a140929b94
+
+# Env note: on a box whose system SciPy was built for NumPy 1.x, constrain
+# numpy<1.25 (within Na0S's >=1.24,<3 range) so `import na0s` is warning-free.
+# This pin is KEPT: HHEM's torch/transformers (below) run fine on numpy 1.24.4
+# (transformers needs only numpy>=1.17; torch declares no bound). `pip check`
+# is clean and all telemetry tests still pass — see docs/contribution-table.md.
+# numpy<1.25
+
+# --- Over-reach gate (verifier stage 2): Vectara HHEM-2.1-Open ----------------
+# A fixed, offline entailment classifier (torch + transformers). Install CPU-only
+# torch from the PyTorch CPU index (small, no CUDA), then transformers + deps:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.4.1
+#   pip install transformers==4.44.2 safetensors sentencepiece protobuf \
+#       huggingface_hub==0.25.2
+# The ~600 MB model WEIGHTS are NOT a pip dependency — fetch them ONCE into the
+# git-ignored models/ cache with:  python3 scripts/fetch_hhem.py
+torch==2.4.1                 # install from the CPU index (see comment above)
+transformers==4.44.2
+safetensors>=0.4.3
+sentencepiece>=0.2.0
+protobuf>=4.25
+huggingface_hub==0.25.2
+
+# --- Dev / test only ---------------------------------------------------------
+# pytest

@@ -20,7 +20,12 @@ from .registry import (
 )
 from .runner import (
     BINARY_WHITELIST,
+    MAX_RETURN_ROWS,
     WHITELISTED_TOOLS,
+    CappedToolResult,
+    CapturePathError,
+    JsonlReceiptWriter,
+    ReceiptWriter,
     ResolvedTool,
     RunnerError,
     ToolArgumentError,
@@ -30,6 +35,9 @@ from .runner import (
     ToolUnavailable,
     inventory,
     run_tool,
+    run_tool_captured,
+    scratch_output_dir,
+    verify_receipts,
 )
 from .server import ReadOnlyMCPServer, build_server
 from .tools import get_image_info, image_info_spec
@@ -47,14 +55,22 @@ __all__ = [
     "image_info_spec",
     # The single vetted subprocess chokepoint (runner.py) + its types.
     "run_tool",
+    "run_tool_captured",
+    "scratch_output_dir",
+    "verify_receipts",
     "inventory",
     "BINARY_WHITELIST",
     "WHITELISTED_TOOLS",
+    "MAX_RETURN_ROWS",
     "ResolvedTool",
     "ToolResult",
+    "CappedToolResult",
+    "ReceiptWriter",
+    "JsonlReceiptWriter",
     "RunnerError",
     "ToolNotAllowed",
     "ToolUnavailable",
     "ToolArgumentError",
     "ToolTimeout",
+    "CapturePathError",
 ]

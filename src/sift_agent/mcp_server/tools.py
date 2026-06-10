@@ -8,19 +8,24 @@ opens one JSON sidecar in read mode — so it (correctly) does not import the ru
 
 Forensic tool wrappers (``vol`` / ``fls`` / ``MFTECmd`` / …) are added the same
 way, with ONE rule: a wrapper that needs to *run a binary* MUST do so through
-:func:`sift_agent.mcp_server.runner.run_tool` — the single vetted subprocess
-chokepoint — never by importing ``subprocess`` here. The AST guard in
-``tests/test_mcp_server.py`` enforces this: any ``subprocess`` / ``os.system`` /
-``os.popen`` outside ``runner.py`` fails the build. The pattern is::
+:func:`sift_agent.mcp_server.runner.run_tool_captured` — the captured face of
+the single vetted subprocess chokepoint — never by importing ``subprocess``
+here. The AST guard in ``tests/test_mcp_server.py`` enforces this: any
+``subprocess`` / ``os.system`` / ``os.popen`` (or a write-mode ``open``)
+outside ``runner.py`` fails the build. The pattern is::
 
-    from .runner import run_tool
+    from .runner import run_tool_captured
 
     def _handler(image_path: str) -> dict:
-        res = run_tool("fls", ["-r", "-p", image_path])   # argv LIST, shell=False
-        return {"exit_code": res.exit_code, "listing": res.stdout}
+        res = run_tool_captured("fls", ["-r", "-p", image_path],
+                                evidence_ref=image_path)  # argv LIST, shell=False
+        return {"receipt_id": res.receipt_id, "rows": list(res.rows),
+                "total_rows": res.total_rows, "truncated": res.truncated}
 
-so the no-write guarantees in :mod:`sift_agent.mcp_server.registry` hold
-unchanged and every execution still lands in the forensic ledger.
+so the wrapper hands the model CAPPED rows plus a ``receipt_id`` (the full
+output is captured to scratch and hash-chained into the receipts ledger), the
+no-write guarantees in :mod:`sift_agent.mcp_server.registry` hold unchanged,
+and every execution lands in the forensic ledger.
 """
 
 from __future__ import annotations

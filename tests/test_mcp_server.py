@@ -8,15 +8,25 @@ write command through it. It does so several independent ways —
   2. by interface   — the server object exposes no command/exec/write method;
   3. by AST scan    — subprocess is reachable ONLY through the single vetted
                        chokepoint ``runner.py`` (Day-2's evolution of the old
-                       "no subprocess anywhere" rule); every other file imports
-                       nothing that can spawn a process, no file anywhere reaches
-                       a shell (``shell=True`` / ``os.system`` / ``os.popen`` /
+                       "no subprocess anywhere" rule), scanned over the WHOLE
+                       ``sift_agent`` package; every other file imports nothing
+                       that can spawn a process, no file anywhere reaches a
+                       shell (``shell=True`` / ``os.system`` / ``os.popen`` /
                        ``eval`` / ``exec`` are forbidden even inside runner.py),
-                       and every ``open()`` in the package is read-only.
+                       and every ``open()`` outside runner.py is read-only
+                       (runner.py alone may write — capture files + receipt
+                       lines — and its targets are runtime-guarded against
+                       evidence paths);
+  4. by verb surface — no registered MCP tool name, whitelisted tool key, or
+                       outward server attribute reads as a destructive verb.
 
-The AST scan is itself proven non-vacuous: dedicated self-tests feed the scanner
-a known violation (flagged) and the runner's legitimate pattern (allowed), and
-assert it scanned >0 files and that the runner-only allowance is load-bearing.
+The AST scan is itself proven non-vacuous several ways: self-tests feed the
+scanner known violations (flagged) and the runner's legitimate pattern
+(allowed); the runner-only allowance is shown to be load-bearing; and a planted
+KNOWN-BAD fixture module (``tests/fixtures/planted_subprocess_violation.py``)
+is copied into a replica of the real package tree and the SAME tree-walk scan
+used by the headline test must catch it — a guard that passes a tree containing
+that file would be worthless, and this proves ours doesn't.
 
 The other tests cover the typed read-only stub tool, input typing, the read-only
 registration guard, and telemetry routing.
@@ -26,9 +36,12 @@ import ast
 import json
 import logging
 import os
+import re
+import shutil
 
 import pytest
 
+import sift_agent
 from sift_agent import telemetry
 from sift_agent import mcp_server
 from sift_agent.mcp_server import (
@@ -215,18 +228,54 @@ _OS_EXEC_NAMES = {
     "execv", "execve", "execvp", "execvpe", "posix_spawn", "posix_spawnp",
 }
 # Attribute calls that spawn a *shell* regardless of the receiving object — banned
-# everywhere, runner included (covers os.system/os.popen and subprocess.getoutput).
-_SHELLISH_ATTRS = {"system", "popen", "getoutput", "getstatusoutput"} | _OS_EXEC_NAMES
-_BANNED_NAME_CALLS = {"eval", "exec", "compile", "__import__"}
+# everywhere, runner included (covers os.system/os.popen, subprocess.getoutput,
+# and asyncio's subprocess spawners, which an adversarial bypass review found
+# would otherwise slip past a scan focused on the ``subprocess`` module alone).
+_SHELLISH_ATTRS = {
+    "system", "popen", "getoutput", "getstatusoutput",
+    "create_subprocess_shell", "create_subprocess_exec",
+    "subprocess_shell", "subprocess_exec",
+} | _OS_EXEC_NAMES
+# ``setattr``/``vars``/``globals`` are banned with eval/exec: they are the
+# remaining syntax for rebinding the runner's whitelist from another module
+# (``setattr(runner, "BINARY_WHITELIST", …)``); nothing in this package needs them.
+_BANNED_NAME_CALLS = {"eval", "exec", "compile", "__import__", "setattr", "delattr",
+                      "vars", "globals"}
 # Dynamic-import escape hatches — banned everywhere (even runner.py), so the
 # "subprocess only via runner" guarantee can't be dodged with
-# ``importlib.import_module("subprocess")``. ``__import__`` is covered above.
-_BANNED_DYNAMIC = {"import_module"}
+# ``importlib.import_module("subprocess")`` or ``importlib.__import__(...)``
+# (the attribute form of ``__import__`` — the Name form is banned above).
+_BANNED_DYNAMIC = {"import_module", "__import__"}
 _READ_MODES = {"r", "rb", "rt", "br", "tr", "rU"}
 
+# Write capability beyond builtin ``open()`` — flagged outside runner.py (the
+# bypass review found ``Path.write_text`` / ``os.remove`` / ``shutil.rmtree``
+# would slip past a mode-string check on ``open`` alone). Receiver-aware where a
+# bare attribute name would collide with harmless methods (``list.remove``,
+# ``str.replace``); unconditional where it cannot (``write_text``).
+_WRITE_ATTRS_ANY_RECV = {"write_text", "write_bytes", "unlink", "rmdir", "touch"}
+_OS_WRITE_NAMES = {
+    "remove", "unlink", "rename", "renames", "replace", "truncate", "chmod",
+    "chown", "rmdir", "removedirs", "makedirs", "mkdir", "symlink", "link",
+    "mknod", "open",
+}
+_SHUTIL_WRITE_NAMES = {"rmtree", "copyfile", "copy", "copy2", "copytree", "move",
+                       "chown", "make_archive", "unpack_archive"}
 
-def _package_py_files():
-    pkg_dir = os.path.dirname(mcp_server.__file__)
+# The runner's whitelist must not be MUTATED from any other module — adding a
+# launcher at runtime (``BINARY_WHITELIST["sh"] = …``) would bypass the closed
+# set without ever importing subprocess. Runtime already refuses (it is a
+# MappingProxyType); this makes the *syntax* a build failure too.
+_PROTECTED_GLOBALS = {"BINARY_WHITELIST", "WHITELISTED_TOOLS", "_RECIPES"}
+_DICT_MUTATORS = {"update", "setdefault", "pop", "popitem", "clear", "__setitem__"}
+
+
+def _package_py_files(pkg_dir=None):
+    """Every .py file under the WHOLE ``sift_agent`` package (not just the
+    mcp_server subpackage) — or under an explicit ``pkg_dir`` so the planted-
+    violation self-test can aim the SAME walk at a replica tree."""
+    if pkg_dir is None:
+        pkg_dir = os.path.dirname(sift_agent.__file__)
     files = []
     for root, _dirs, names in os.walk(pkg_dir):
         if "__pycache__" in root:
@@ -248,7 +297,7 @@ def _open_mode(node):
     return mode
 
 
-def _scan_source(src, filename="<source>", *, allow_subprocess):
+def _scan_source(src, filename="<source>", *, allow_subprocess, allow_write_open=False):
     """Return a list of shell/write-capability offenses in ``src``.
 
     ``allow_subprocess`` is ``True`` only for ``runner.py``: there, importing and
@@ -256,11 +305,44 @@ def _scan_source(src, filename="<source>", *, allow_subprocess):
     ``os.popen``, ``*.getoutput``, ``eval``/``exec`` and friends are STILL
     flagged. With ``allow_subprocess=False`` (every other file) any ``subprocess``
     use is also an offense.
+
+    ``allow_write_open`` is likewise ``True`` only for ``runner.py``, which must
+    write capture files + receipt lines (to runtime-guarded scratch paths, never
+    evidence — see ``runner._refuse_evidence_path``). Everywhere else ANY write
+    capability is an offense: a write-mode ``open()``, the ``os``/``shutil``/
+    ``pathlib`` write calls, and mutation of the runner's whitelist globals.
+    The rest of the package is read-only by construction.
+
+    Threat model (stated honestly): an AST scan catches capability creep and
+    plainly-written bypasses; it cannot decide what obfuscated code does at
+    runtime (no static scan can). It is one layer — the typed registry, the
+    closed whitelist (a runtime ``MappingProxyType``), the evidence-path guard,
+    and review are the others.
     """
     tree = ast.parse(src, filename=filename)
     offenses = []
     subprocess_aliases = set()        # names bound to the subprocess module here
     subprocess_imported_names = set()  # `from subprocess import run` -> {"run"}
+    protected_local = set(_PROTECTED_GLOBALS)  # incl. `... import X as Y` aliases
+
+    def _touches_protected(target):
+        """True if an assignment/delete target reaches a protected global."""
+        if isinstance(target, (ast.Tuple, ast.List)):
+            return any(_touches_protected(t) for t in target.elts)
+        if isinstance(target, ast.Starred):
+            return _touches_protected(target.value)
+        if isinstance(target, ast.Name):
+            return target.id in protected_local
+        if isinstance(target, ast.Attribute):
+            return target.attr in _PROTECTED_GLOBALS
+        if isinstance(target, ast.Subscript):
+            base = target.value
+            if isinstance(base, ast.Name):
+                return base.id in protected_local
+            if isinstance(base, ast.Attribute):
+                # runner.BINARY_WHITELIST[...] and runner.__dict__[...]
+                return base.attr in _PROTECTED_GLOBALS or base.attr == "__dict__"
+        return False
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -285,6 +367,26 @@ def _scan_source(src, filename="<source>", *, allow_subprocess):
                 for alias in node.names:
                     if alias.name in _OS_EXEC_NAMES:
                         offenses.append(f"from os import {alias.name}")
+                    elif alias.name in _OS_WRITE_NAMES and not allow_write_open:
+                        offenses.append(f"from os import {alias.name} (write)")
+            elif mod == "shutil" and not allow_write_open:
+                for alias in node.names:
+                    if alias.name in _SHUTIL_WRITE_NAMES:
+                        offenses.append(f"from shutil import {alias.name} (write)")
+            # Track aliasing of the protected whitelist globals so
+            # `from .runner import BINARY_WHITELIST as W; W[...] = …` is caught.
+            for alias in node.names:
+                if alias.name in _PROTECTED_GLOBALS:
+                    protected_local.add(alias.asname or alias.name)
+        elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete)):
+            if not allow_write_open:  # runner.py owns (and builds) the whitelist
+                targets = (
+                    node.targets if isinstance(node, (ast.Assign, ast.Delete))
+                    else [node.target]
+                )
+                for t in targets:
+                    if _touches_protected(t):
+                        offenses.append("whitelist mutation (assignment/delete)")
         elif isinstance(node, ast.Call):
             func = node.func
             # A shell is forbidden EVERYWHERE, including runner.py. The ONLY
@@ -304,7 +406,8 @@ def _scan_source(src, filename="<source>", *, allow_subprocess):
                     offenses.append(f"call {func.id}()")
                 if (not allow_subprocess) and func.id in subprocess_imported_names:
                     offenses.append(f"call {func.id}() (subprocess)")
-                if func.id == "open":  # enforce read-only opens
+                if func.id == "open" and not allow_write_open:
+                    # enforce read-only opens everywhere but runner.py
                     mode = _open_mode(node)
                     if mode is not None and mode not in _READ_MODES:
                         offenses.append(f"open(mode={mode!r}) — not read-only")
@@ -314,44 +417,87 @@ def _scan_source(src, filename="<source>", *, allow_subprocess):
                     offenses.append(f"call .{func.attr}()")
                 elif recv in subprocess_aliases and not allow_subprocess:
                     offenses.append(f"call {recv}.{func.attr}() (subprocess)")
+                if not allow_write_open:
+                    # Write capability beyond builtin open(): pathlib writers on
+                    # any receiver; os/shutil writers on their module receiver.
+                    if func.attr in _WRITE_ATTRS_ANY_RECV:
+                        offenses.append(f"call .{func.attr}() (write)")
+                    elif recv == "os" and func.attr in _OS_WRITE_NAMES:
+                        offenses.append(f"call os.{func.attr}() (write)")
+                    elif recv == "shutil" and func.attr in _SHUTIL_WRITE_NAMES:
+                        offenses.append(f"call shutil.{func.attr}() (write)")
+                    # Whitelist mutation via dict methods, plain or dotted:
+                    # BINARY_WHITELIST.update(...) / runner.BINARY_WHITELIST.pop(...)
+                    if func.attr in _DICT_MUTATORS:
+                        base = func.value
+                        if (isinstance(base, ast.Name) and base.id in protected_local) or (
+                            isinstance(base, ast.Attribute)
+                            and base.attr in _PROTECTED_GLOBALS
+                        ):
+                            offenses.append(
+                                f"whitelist mutation (.{func.attr}())"
+                            )
     return offenses
 
 
-def _scan_offenses(path, *, allow_subprocess):
+def _scan_offenses(path, *, allow_subprocess, allow_write_open=False):
     with open(path, "r", encoding="utf-8") as fh:
         return _scan_source(
-            fh.read(), os.path.basename(path), allow_subprocess=allow_subprocess
+            fh.read(),
+            os.path.basename(path),
+            allow_subprocess=allow_subprocess,
+            allow_write_open=allow_write_open,
         )
 
 
-def test_subprocess_is_reachable_only_via_runner():
-    """No file but runner.py may import/call subprocess; none may reach a shell."""
-    files = _package_py_files()
-    assert files, "no package source found to scan"
-    # Guard against a bad glob silently scanning nothing.
-    assert len(files) >= 4, f"expected to scan the whole package, got {files}"
-    basenames = {os.path.basename(f) for f in files}
-    assert _RUNNER_BASENAME in basenames, "runner.py must exist and be scanned"
+def _scan_tree(pkg_dir=None):
+    """Run the headline scan over a package tree; return {basename: offenses}.
 
+    Factored out so the planted-violation self-test exercises the IDENTICAL
+    walk + per-file policy that gates the real package.
+    """
+    files = _package_py_files(pkg_dir)
+    assert files, "no package source found to scan"
     offenders = {}
     for f in files:
         allow = os.path.basename(f) == _RUNNER_BASENAME
-        off = _scan_offenses(f, allow_subprocess=allow)
+        off = _scan_offenses(f, allow_subprocess=allow, allow_write_open=allow)
         if off:
             offenders[os.path.basename(f)] = off
-    assert not offenders, f"shell/subprocess capability found outside runner: {offenders}"
+    return files, offenders
+
+
+def test_subprocess_is_reachable_only_via_runner():
+    """No file but runner.py may import/call subprocess or open for write, in
+    the WHOLE sift_agent package; no file anywhere may reach a shell."""
+    files, offenders = _scan_tree()
+    # Guard against a bad glob silently scanning nothing. The whole package =
+    # sift_agent (__init__, finding, telemetry) + the mcp_server subpackage.
+    assert len(files) >= 7, f"expected to scan the whole sift_agent package, got {files}"
+    basenames = {os.path.basename(f) for f in files}
+    assert _RUNNER_BASENAME in basenames, "runner.py must exist and be scanned"
+    assert "telemetry.py" in basenames, "scan must cover sift_agent, not just mcp_server"
+    assert not offenders, f"shell/subprocess/write capability found outside runner: {offenders}"
 
 
 def test_runner_allowance_is_load_bearing():
-    """runner.py really DOES use subprocess — so the exception isn't vacuous."""
+    """runner.py really DOES use subprocess + write-mode open — so neither
+    exception is vacuous."""
     runner = [f for f in _package_py_files() if os.path.basename(f) == _RUNNER_BASENAME]
     assert len(runner) == 1, "exactly one runner.py expected"
-    # With the runner allowance it is clean; without it, the SAME file is flagged
-    # (because it genuinely contains subprocess) — proving the gate does real work.
-    assert _scan_offenses(runner[0], allow_subprocess=True) == []
-    assert _scan_offenses(runner[0], allow_subprocess=False), (
+    # With the runner allowances it is clean; without them, the SAME file is
+    # flagged (it genuinely contains subprocess AND write-mode opens for the
+    # capture/receipt files) — proving each gate does real work.
+    assert _scan_offenses(runner[0], allow_subprocess=True, allow_write_open=True) == []
+    no_subprocess = _scan_offenses(runner[0], allow_subprocess=False, allow_write_open=True)
+    assert any("subprocess" in o for o in no_subprocess), (
         "runner.py should contain subprocess; if it doesn't, the runner-only "
         "allowance is rubber-stamping an empty exception"
+    )
+    no_write = _scan_offenses(runner[0], allow_subprocess=True, allow_write_open=False)
+    assert any(o.startswith("open(") for o in no_write), (
+        "runner.py should contain write-mode opens (capture + receipts); if it "
+        "doesn't, the write allowance is rubber-stamping an empty exception"
     )
 
 
@@ -420,6 +566,183 @@ def test_scanner_closes_dynamic_import_escape_hatch():
     ):
         assert _scan_source(src, "runner.py", allow_subprocess=True), src
         assert _scan_source(src, "tools.py", allow_subprocess=False), src
+
+
+def test_scanner_flags_write_open_outside_runner_only():
+    # The write-open allowance is runner-scoped: the same source is an offense
+    # as an ordinary package file and clean only under the runner allowance.
+    src = 'def save(p, data):\n    with open(p, "w") as fh:\n        fh.write(data)\n'
+    off = _scan_source(src, "tools.py", allow_subprocess=False)
+    assert any(o.startswith("open(") for o in off), off
+    assert _scan_source(src, "runner.py", allow_subprocess=True, allow_write_open=True) == []
+    # Read-only opens stay clean everywhere.
+    ok = 'def load(p):\n    with open(p, "r") as fh:\n        return fh.read()\n'
+    assert _scan_source(ok, "tools.py", allow_subprocess=False) == []
+
+
+def test_scanner_closes_spawn_holes_found_by_bypass_review():
+    """asyncio's process spawners and importlib.__import__ are banned EVERYWHERE
+    (even runner.py): each would have been a working bypass of a scan focused on
+    the ``subprocess`` module alone."""
+    spawny = [
+        "import asyncio\nasync def go(c):\n    await asyncio.create_subprocess_shell(c)\n",
+        "import asyncio\nasync def go(c):\n    await asyncio.create_subprocess_exec(c)\n",
+        "import importlib\ndef go():\n    return importlib.__import__('subprocess')\n",
+    ]
+    for src in spawny:
+        assert _scan_source(src, "tools.py", allow_subprocess=False), src
+        # no allowance legitimizes these — not even the runner's
+        assert _scan_source(
+            src, "runner.py", allow_subprocess=True, allow_write_open=True
+        ), src
+
+
+def test_scanner_flags_write_capability_beyond_builtin_open():
+    """Path.write_text / os.remove / shutil.rmtree / os.open / `from os import
+    unlink` are write capability even though no ``open(..., "w")`` appears —
+    flagged outside runner.py, allowed inside it (runner legitimately makedirs)."""
+    writey = [
+        "from pathlib import Path\ndef go(p):\n    Path(p).write_text('x')\n",
+        "import os\ndef go(p):\n    os.remove(p)\n",
+        "import os\ndef go(p):\n    os.rename(p, p + '.bak')\n",
+        "import os\ndef go(p):\n    os.open(p, 1)\n",
+        "import shutil\ndef go(s, d):\n    shutil.rmtree(s)\n",
+        "import shutil\ndef go(s, d):\n    shutil.copyfile(s, d)\n",
+        "from os import unlink\n",
+        "from shutil import rmtree\n",
+    ]
+    for src in writey:
+        off = _scan_source(src, "tools.py", allow_subprocess=False)
+        assert any("write" in o for o in off), (src, off)
+        # The runner allowance covers them (its targets are runtime-guarded
+        # against evidence paths by _refuse_evidence_path).
+        assert _scan_source(
+            src, "runner.py", allow_subprocess=True, allow_write_open=True
+        ) == [], src
+    # Read-only os/shutil/pathlib use stays clean everywhere.
+    ok = (
+        "import os, shutil\nfrom pathlib import Path\n"
+        "def go(p):\n"
+        "    return os.path.exists(p), shutil.which('fls'), Path(p).read_text()\n"
+    )
+    assert _scan_source(ok, "tools.py", allow_subprocess=False) == []
+
+
+def test_scanner_flags_whitelist_mutation_outside_runner():
+    """Adding a launcher at runtime (``BINARY_WHITELIST['sh'] = …``) would bypass
+    the closed whitelist without importing subprocess — the exact hole the
+    adversarial review found. Mutation SYNTAX is a build failure outside
+    runner.py (runtime already refuses: the whitelist is a MappingProxyType)."""
+    mutations = [
+        "from sift_agent.mcp_server.runner import BINARY_WHITELIST\n"
+        "BINARY_WHITELIST['sh'] = object()\n",
+        # aliasing does not dodge the scan
+        "from sift_agent.mcp_server.runner import BINARY_WHITELIST as W\n"
+        "W['sh'] = object()\n",
+        "from sift_agent.mcp_server.runner import BINARY_WHITELIST\n"
+        "BINARY_WHITELIST.update({'sh': object()})\n",
+        # rebinding the module attribute / its __dict__
+        "from sift_agent.mcp_server import runner\nrunner.BINARY_WHITELIST = {}\n",
+        "from sift_agent.mcp_server import runner\n"
+        "runner.__dict__['BINARY_WHITELIST'] = {}\n",
+        "from sift_agent.mcp_server import runner\n"
+        "setattr(runner, 'BINARY_WHITELIST', {})\n",
+        "from sift_agent.mcp_server import runner\ndel runner.BINARY_WHITELIST\n",
+        "from sift_agent.mcp_server.runner import _RECIPES\n_RECIPES['sh'] = ()\n",
+    ]
+    for src in mutations:
+        assert _scan_source(src, "tools.py", allow_subprocess=False), src
+    # runner.py itself builds the whitelist — assignment there is legitimate.
+    own = "BINARY_WHITELIST = _build_whitelist()\n"
+    assert _scan_source(own, "runner.py", allow_subprocess=True, allow_write_open=True) == []
+    # READING the whitelist anywhere is fine (that is the whole point of it).
+    read = (
+        "from sift_agent.mcp_server.runner import BINARY_WHITELIST\n"
+        "def go(k):\n    return BINARY_WHITELIST[k]\n"
+    )
+    assert _scan_source(read, "tools.py", allow_subprocess=False) == []
+
+
+# -- the planted KNOWN-BAD module: the tree-level non-vacuity proof ----------
+_PLANTED_FIXTURE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "fixtures",
+    "planted_subprocess_violation.py",
+)
+
+
+def test_planted_violation_in_a_package_replica_is_caught(tmp_path):
+    """Copy the REAL package tree, plant the known-bad fixture inside, and run
+    the IDENTICAL tree scan the headline test uses: it must fail loudly on the
+    plant and pass once the plant is removed. A guard that passed a tree
+    containing this module would be worthless — this proves ours doesn't."""
+    pkg_dir = os.path.dirname(sift_agent.__file__)
+    replica = tmp_path / "sift_agent_replica"
+    shutil.copytree(
+        pkg_dir, replica, ignore=shutil.ignore_patterns("__pycache__", "*.pyc")
+    )
+
+    # 1) The clean replica passes — same verdict as the real tree.
+    _files, offenders = _scan_tree(str(replica))
+    assert not offenders, f"replica of the real tree should be clean: {offenders}"
+
+    # 2) Plant the violation INSIDE the package (next to the typed tools, where
+    #    a careless/with-malice change would actually land) and rescan.
+    with open(_PLANTED_FIXTURE, "r", encoding="utf-8") as fh:
+        bad_src = fh.read()
+    plant = replica / "mcp_server" / "exfil_helper.py"
+    plant.write_text(bad_src)
+    files, offenders = _scan_tree(str(replica))
+    assert str(plant) in files, "the planted module must be walked"
+    assert "exfil_helper.py" in offenders, (
+        "the tree scan FAILED to flag a planted subprocess/shell/write module — "
+        "the guard is vacuous"
+    )
+    caught = offenders["exfil_helper.py"]
+    assert any("import subprocess" in o for o in caught)
+    assert any(o.startswith("shell=") for o in caught)
+    assert any(".system()" in o for o in caught)
+    assert any(o.startswith("open(") for o in caught)
+
+    # 3) Even planted AS runner.py itself (maximum allowance), the shell and
+    #    os.system offenses still fail the scan — the chokepoint cannot
+    #    legitimize a shell.
+    plant.unlink()
+    runner_plant = replica / "mcp_server" / "runner.py"  # overwrite the replica's
+    runner_plant.write_text(bad_src)
+    _files, offenders = _scan_tree(str(replica))
+    assert "runner.py" in offenders, "a shell inside runner.py must still fail"
+
+
+# -- the public tool surface names no destructive verb ------------------------
+_DESTRUCTIVE_VERBS = {
+    "write", "delete", "remove", "rm", "unlink", "erase", "wipe", "shred",
+    "mkfs", "format", "mount", "umount", "unmount", "chmod", "chown", "dd",
+    "truncate", "kill", "move", "mv", "rename", "copy", "cp", "patch",
+    "modify", "update", "set", "put", "create",
+    "shell", "exec", "execute", "eval", "system", "popen", "spawn", "bash", "sh",
+}
+
+
+def _name_tokens(name):
+    """camelCase/snake_case-aware word split, lowercased."""
+    return {t.lower() for t in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z0-9]+", name)}
+
+
+def test_public_tool_surface_names_no_destructive_verb(server):
+    # (a) every registered MCP tool name
+    mcp_names = [t["name"] for t in server.list_tools()]
+    assert mcp_names, "expected at least one registered tool"
+    # (b) every whitelisted runner tool key
+    from sift_agent.mcp_server.runner import WHITELISTED_TOOLS
+
+    surface = list(mcp_names) + list(WHITELISTED_TOOLS)
+    for name in surface:
+        hits = _name_tokens(name) & _DESTRUCTIVE_VERBS
+        assert not hits, f"destructive verb {hits} in public tool surface name {name!r}"
+    # (c) non-vacuity: the same check rejects what it must reject.
+    for bad in ("write_file", "rm", "dd", "mount_rw", "format_disk", "execute_shell"):
+        assert _name_tokens(bad) & _DESTRUCTIVE_VERBS, bad
 
 
 # ---------------------------------------------------------------------------

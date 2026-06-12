@@ -7,6 +7,8 @@
 *secret*
 .aws/
 .config/gh/
+settings.local.json
+**/.claude/settings.local.json
 
 # --- Forensic evidence / case data (never commit raw evidence) ---
 evidence/
@@ -27,6 +29,9 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+
+# --- Tool output ---
+runs/
 
 # --- OS / editor cruft ---
 .DS_Store

@@ -32,7 +32,7 @@ ssh-copy-id ubuntu@10.104.28.103
   - `Standard-Forensic_Case/`
 - **Evidence mutability**: writable home dir, no ro bind-mount; integrity enforced by A6 (deny-regex over Bash commands + per-run `hashdeep -a -k hashes.txt -r /home/ubuntu/Downloads`). Optional hardening TODO: ro bind-mount at `/mnt/evidence`.
 
-## Connectivity Check (Task 6)
+## Connectivity Check
 
 Command run:
 
@@ -40,17 +40,41 @@ Command run:
 ssh -o BatchMode=yes -o ConnectTimeout=5 ubuntu@10.104.28.103 'echo ok && which claude && ls ~/.claude/skills 2>/dev/null'
 ```
 
-Verbatim output:
+Verbatim output (after PATH fix — see below):
 
 ```
 ok
+/home/ubuntu/.local/bin/claude
+braintrust
+memory-analysis
+plaso-timeline
+sleuthkit
+windows-artifacts
+yara-hunting
 ```
 
-Exit code: `1`
+Exit code: `0`
 
-Interpretation: SSH key auth succeeded and `echo ok` ran. `which claude` returned non-zero — `claude` is not in the default `$PATH` for non-interactive SSH sessions on sift-vm (it may be installed under a user-local path such as `~/.local/bin` or via `nvm`/`fnm`). The `ls ~/.claude/skills` command was not reached due to `&&` short-circuit.
+### PATH fix applied
 
-Remediation if needed: add Claude Code's install directory to `PATH` in `~/.bashrc` or `~/.profile`, then re-run the connectivity check.
+Claude Code is installed at `/home/ubuntu/.local/bin/claude`. On Ubuntu, `.profile` adds
+`~/.local/bin` to PATH for login shells only. Non-interactive SSH (`ssh host 'command'`)
+invokes a non-login, non-interactive bash that hits the early-exit guard in `.bashrc` before
+any PATH modification runs.
+
+Fix: inserted `export PATH="$HOME/.local/bin:$PATH"` into `~/.bashrc` on sift-vm **before**
+the `case $-` interactive guard (after line 5), so it applies to all bash sessions:
+
+```bash
+# ~/.bashrc lines 5-10 after fix:
+# If not running interactively, don't do anything
+
+export PATH="$HOME/.local/bin:$PATH"
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+```
 
 ## Hygiene Rules
 

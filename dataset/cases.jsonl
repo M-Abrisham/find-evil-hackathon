@@ -1,0 +1,3 @@
+# TODO: populate with 5 features x 3 scenarios from SRL-2015, SRL-2018, Standard-Forensic-Case-2, Standard-Forensic_Case
+# Format: one JSON object per line with fields: case_id, case_dir, prompt, expected
+# expected fields: skill, tool_re, ordering, denylist — no answer values

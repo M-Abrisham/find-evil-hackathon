@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+cases/
+*.raw
+*.E01
+runs/

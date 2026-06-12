@@ -1,0 +1,3 @@
+# TODO (A8): run the following on sift-vm and hand-review results, then commit file paths here:
+# find /home/ubuntu/Downloads -iname '*solution*' -o -iname '*answer*' -o -iname '*walkthrough*' -o -iname '*writeup*'
+# One absolute path per line. Empty file = trivial pass for A8.

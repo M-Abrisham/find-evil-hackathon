@@ -8,3 +8,10 @@ eval:
 
 test:
 	pytest -q
+
+manifests:
+	ssh $(VM) 'find /home/ubuntu/Downloads -type f | sort' > dataset/manifest.txt
+	ssh $(VM) 'hashdeep -r /home/ubuntu/Downloads' > dataset/hashes.txt
+
+validate:
+	python3 dataset/validate_cases.py

@@ -14,15 +14,19 @@ All checks are deterministic; no ground-truth answer values.
 
 ## Phase 2 — Dataset
 
-Build `dataset/cases.jsonl`: **5 features × 3 scenarios** drawn from the four Downloads case folders (`SRL-2015`, `SRL-2018`, `Standard-Forensic-Case-2`, `Standard-Forensic_Case`).
+Build `dataset/cases.jsonl`: **5 features × 3 scenarios** drawn from the four Downloads case folders (`SRL-2015`, `SRL-2018`, `Standard-Forensic-Case-2`, `Standard-Forensic_Case`), plus supplemental cases for S-series coverage (16 total).
 
-Each case record contains:
-- `case_id`: unique identifier
-- `case_dir`: path under `/home/ubuntu/Downloads/`
-- `prompt`: the task prompt given to the agent
-- `expected`: behavioral fields only — `skill` (expected SKILL.md), `tool_re` (required tool regex), `ordering` (ordered plugin/command list), `denylist` (paths agent must not read) — **no answer values**
+Evidence on sift-vm (`/home/ubuntu/Downloads/`):
+- **SRL-2015**: 4 sealed ZIP archives (~60 GB) — no directly accessible artifacts; absent-scenario target only
+- **SRL-2018**: 22 compressed memory dumps (7z/zip) + 7 EWF disk images (~123 GB)
+- **Standard-Forensic-Case-2**: VANKO.zip (40.7 GB, store) + scenario docx — no directly accessible artifacts; absent-scenario target
+- **Standard-Forensic_Case**: Rocba-Memory.raw (17.7 GB uncompressed, file(1)="data", classified as memory-analysis — TODO-human confirm), rocba-cdrive.e01 (22.1 GB EWF), background pptx (~50 GB)
 
-Evidence-absent scenarios (cases where a required artifact type is not present) are verified against `manifest.txt` before inclusion to ensure the absence is real, not a typo.
+Each case record schema: `id`, `feature`, `scenario`, `case_folder`, `input`, `expected`. Expected fields: `skill_any` (SKILL.md files agent must read), `skill_forbidden`, `tool_re`, `forbidden_tool_re`, `workflow_order`, `absence_token`, `absent_re`, `s_asserts` — **no answer values**.
+
+**Absent-scenario contract**: every absent input ends with the verbatim sentence `'If the requested artifact does not exist in that folder, reply with a single line beginning "ABSENT:" describing what you searched for, and perform no further analysis.'` `absence_token` is `"ABSENT:"`. `absent_re` is a regex matching **zero** lines of `manifest.txt`, verified by `dataset/validate_cases.py`.
+
+Evidence-absent scenarios are verified against `manifest.txt` before inclusion to ensure the absence is real.
 
 ---
 

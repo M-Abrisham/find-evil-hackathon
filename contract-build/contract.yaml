@@ -1,0 +1,65 @@
+# ============================================================================
+# Protocol SIFT — DELIVERABLE CONTRACT  ·  SINGLE SOURCE OF TRUTH
+# ----------------------------------------------------------------------------
+# Edit THIS file for any new finding on Verdict / IOC / MITRE, then run:
+#     make render      # regenerate the contract text in global/CLAUDE.md
+#     make sync        # deploy to ~/.claude so the next run uses it
+# Never hand-edit the generated contract prose in global/CLAUDE.md — it is
+# overwritten from here every time you render.
+# ============================================================================
+version: 1
+
+verdict:
+  # The report MUST end with ONE token from `vocabulary`, qualified by confidence
+  # PER DIMENSION. The deterministic scorer word-matches this token against the
+  # case answer key, so these strings MUST match the answer-key verdict values.
+  vocabulary:
+    - token: MALICE
+      meaning: Artifacts support malicious / incriminating activity.
+    - token: NON_MALICE
+      meaning: Artifacts show the activity is non-malicious / lawful.
+    - token: INCONCLUSIVE
+      meaning: Artifacts are insufficient to decide.
+  confidence_levels: [HIGH, MODERATE, LOW]
+  dimensions: [act, attribution]      # a strong act can pair with weak attribution
+  rules:
+    - Emit exactly one token from the vocabulary.
+    - Always attach per-dimension confidence; never collapse to an unqualified yes/no.
+    - Assert MALICE or NON_MALICE only when artifacts support it; otherwise INCONCLUSIVE.
+    - The verdict is the LAST section of the report.
+  # Semantic equivalence classes for SCORING (synonym token lists). The scorer maps the
+  # answer-key verdict AND the report's `VERDICT:` token to a class and matches on the
+  # class — so wording can flex and `NON_MALICE` is never misread as `MALICE`.
+  # (The scorer mirrors this in scoring/scorer.py:VERDICT_CLASSES; keep the two in sync.)
+  equivalence_classes:
+    malicious:     [MALICE, MALICIOUS]
+    non_malicious: [NON_MALICE, NONMALICE, BENIGN]
+    inconclusive:  [INCONCLUSIVE, INDETERMINATE, UNKNOWN]
+
+ioc:
+  # Every indicator stated in the report goes in ONE table. `types` are the
+  # scorer's taxonomy; write each Value in the form the scorer normalizes to
+  # (the weakest correct form) so a correct finding is never mangled.
+  confidence_vocab: [CONFIRMED, INFERRED, UNCERTAIN]
+  columns: [Type, Value, Confidence]
+  types:
+    - {type: email,        value_form: lowercase}
+    - {type: file_hash,    value_form: "lowercase hex, no 0x / colons / spaces"}
+    - {type: ip_address,   value_form: "dotted quad, exact (note CIDR ranges separately)"}
+    - {type: mac_address,  value_form: "colon- or hyphen-separated hex"}
+    - {type: windows_sid,  value_form: "UPPERCASE  S-1-5-..."}
+    - {type: file_path,    value_form: "as-seen (Windows backslashes are fine)"}
+    - {type: hostname,     value_form: as-seen}
+    - {type: username,     value_form: as-seen}
+  rules:
+    - List ONLY indicators whose value appears in the evidence you were given. Never invent.
+    - One row per indicator; if a value is unknown or absent, omit the row (do not guess).
+
+mitre:
+  framework: MITRE ATT&CK (Enterprise)
+  columns: [Technique, T-code, Evidencing artifact]
+  code_format: "Txxxx or Txxxx.yyy  (plain text, e.g. T1040, T1595.001)"
+  rules:
+    - Map ONLY techniques you actually observed in the artifacts.
+    - Every row MUST cite the evidencing artifact (ART-id or tool output).
+    - Never emit a T-code you cannot tie to evidence (no recall-padding).

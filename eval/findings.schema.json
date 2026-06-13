@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://protocol-sift.local/eval/findings.schema.json",
+  "title": "Protocol SIFT — Blind Investigator Findings",
+  "description": "BUILD-TIME EVAL TOOLING — not part of any hackathon submission. The structured output the AI investigator must emit on a BLIND run (driven by run_blind.py). Top-level attack_type_classification maps the incident into the 24-category on-box SIFT Detection-&-Analysis taxonomy (the AI picks it; it is NEVER given in the prompt), plus a flat list of findings. Every finding pins one claim to a literal copied verbatim from a named run-verified tool's output, so a scorer can mechanically flag any claim with no backing literal as a hallucination.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attack_type_classification",
+    "findings"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Version of this findings schema the output targets.",
+      "const": "1.0"
+    },
+    "case_id": {
+      "type": "string",
+      "description": "Identifier of the case under investigation (set by the harness; the investigator may echo it)."
+    },
+    "attack_type_classification": {
+      "type": "object",
+      "description": "The investigator's single best classification of the incident, chosen from the 24-category on-box SIFT Detection-&-Analysis taxonomy. Derived from evidence — it is NEVER supplied in the neutral prompt.",
+      "additionalProperties": false,
+      "required": [
+        "category",
+        "confidence",
+        "rationale"
+      ],
+      "properties": {
+        "category": {
+          "description": "Primary attack/investigation type, chosen verbatim from the 24-category on-box SIFT taxonomy.",
+          "$ref": "#/$defs/sift_category"
+        },
+        "secondary_categories": {
+          "type": "array",
+          "description": "Optional further categories that also apply (multi-stage incidents commonly span more than one).",
+          "items": {
+            "$ref": "#/$defs/sift_category"
+          },
+          "uniqueItems": true
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Short evidence-grounded reason for this classification; should reference at least one finding id.",
+          "minLength": 1
+        },
+        "supporting_finding_ids": {
+          "type": "array",
+          "description": "Ids of findings[] entries that drove this classification.",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "description": "Flat list of evidence-grounded findings. May be empty only if the investigator genuinely established nothing; in that case attack_type_classification.confidence should be insufficient_evidence.",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "abstentions": {
+      "type": "array",
+      "description": "Optional record of questions the investigator deliberately could not answer (abstain rather than guess).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "question",
+          "reason"
+        ],
+        "properties": {
+          "question": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sift_category": {
+      "type": "string",
+      "description": "One of the 24 ON-BOX Detection-&-Analysis categories of the SIFT IR taxonomy (Complete_IR_Investigation_Type_Taxonomy). These are the only valid classification labels.",
+      "enum": [
+        "Acquisition, Custody & Cross-Platform Synthesis",
+        "Endpoint / Disk & File System",
+        "File Recovery, Carving & Data Reduction",
+        "Memory (RAM) Forensics",
+        "Windows Artifacts - Execution & User Activity",
+        "Windows Registry & Persistence",
+        "Windows Event Logs (EVTX/ETW)",
+        "Linux / Unix Host Forensics",
+        "macOS Forensics",
+        "Browser, Email & Document Forensics",
+        "Web / Perimeter & Server Compromise",
+        "Network Forensics",
+        "Malware Analysis & Triage",
+        "Active Directory & Domain",
+        "Cloud Identity & SaaS",
+        "Cloud IaaS Control-Plane & Data",
+        "Containers, CI/CD & Software Supply Chain",
+        "Attack-Lifecycle Hunting (ATT&CK)",
+        "Impact, Ransomware & Destructive",
+        "Insider Threat, Fraud & Data Theft",
+        "Steganography, Data-Hiding & Encryption",
+        "Threat Hunting & IOC Sweeps",
+        "Targeted Intrusion / APT & Specialized",
+        "Virtualization & Mobile/Embedded"
+      ]
+    },
+    "confidence": {
+      "type": "string",
+      "description": "confirmed = a tool output literally states the claim; inferred = a reasonable read of tool output but not stated outright; insufficient_evidence = could not establish it from any tool output (abstain rather than guess).",
+      "enum": [
+        "confirmed",
+        "inferred",
+        "insufficient_evidence"
+      ]
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "claim",
+        "evidence_pointer",
+        "tool_used",
+        "confidence",
+        "sources"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable identifier for this finding (e.g. F-001). Referenced by the classification and by other findings.",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "claim": {
+          "type": "string",
+          "description": "Exactly one factual statement about the incident.",
+          "minLength": 1
+        },
+        "evidence_pointer": {
+          "type": "object",
+          "description": "Where this claim is grounded. literal_cited must be copied verbatim from the tool's output so a scorer can string-match it to confirm the claim is backed.",
+          "additionalProperties": false,
+          "required": [
+            "artifact",
+            "offset_or_row",
+            "literal_cited"
+          ],
+          "properties": {
+            "artifact": {
+              "type": "string",
+              "description": "The artifact the claim is grounded in (e.g. $MFT, SYSTEM hive, Security.evtx, setupapi.dev.log, pagefile.sys, a path on the read-only mount).",
+              "minLength": 1
+            },
+            "offset_or_row": {
+              "type": "string",
+              "description": "Pinpoint within the artifact: byte offset, MFT inode, EVTX record number, CSV/plugin row, line number, etc. Use empty string only when genuinely not applicable."
+            },
+            "literal_cited": {
+              "type": "string",
+              "description": "Verbatim substring copied from the tool's output that backs the claim. MUST appear in the captured tool output — this is what the scorer matches to flag unbacked claims as hallucinations.",
+              "minLength": 1
+            }
+          }
+        },
+        "tool_used": {
+          "type": "string",
+          "description": "The single primary tool that produced the cited literal. MUST be one of the 90 run-verified on-box tools (see Running_Tool_Claude_Verification); naming an off-box or invented tool is a hard failure.",
+          "minLength": 1
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "sources": {
+          "type": "array",
+          "description": "Independent corroborating sources for this claim (two-source rule). Include tool_used itself plus, ideally, a second independent source. A single-source claim is a lead, not a conclusion.",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "tool",
+              "artifact"
+            ],
+            "properties": {
+              "tool": {
+                "type": "string",
+                "description": "Run-verified on-box tool name.",
+                "minLength": 1
+              },
+              "artifact": {
+                "type": "string",
+                "description": "Artifact this source examined.",
+                "minLength": 1
+              },
+              "locator": {
+                "type": "string",
+                "description": "Optional pinpoint within this corroborating source."
+              }
+            }
+          }
+        },
+        "related_finding_ids": {
+          "type": "array",
+          "description": "Optional links to other findings (e.g. a timeline chain).",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

@@ -231,17 +231,83 @@ def ioc_present(ioc: dict, text: str) -> bool:
 # =============================================================================
 # Verdict / MITRE / fabrication.
 # =============================================================================
+# Verdict equivalence classes — synonym token lists per semantic class.
+# SOURCE OF TRUTH: protocol-sift/contract/contract.yaml (verdict.equivalence_classes).
+# Mirrored here so the scorer has no cross-machine runtime dependency; keep the two in
+# sync (Phase 6 unifies them). Scoring matches the parsed ``VERDICT:`` line FIELD against
+# these classes — never a prose substring — so ``NON_MALICE`` is never misread as ``MALICE``.
+VERDICT_CLASSES: dict[str, set[str]] = {
+    "malicious":     {"MALICE", "MALICIOUS"},
+    "non_malicious": {"NON_MALICE", "NONMALICE", "BENIGN"},
+    "inconclusive":  {"INCONCLUSIVE", "INDETERMINATE", "UNKNOWN"},
+}
+
+# The explicit verdict line the Deliverable Contract requires, e.g.
+#   VERDICT: MALICE — act: HIGH, attribution: MODERATE
+_VERDICT_LINE_RE = re.compile(r"VERDICT:\s*\*{0,2}\s*([A-Za-z][A-Za-z_-]*)", re.IGNORECASE)
+
+
+def _verdict_class(token: str) -> str | None:
+    """Semantic class for a verdict token (case- and ``-``/``_``-insensitive), or None."""
+    norm = token.strip().upper().replace("-", "_")
+    for cls, members in VERDICT_CLASSES.items():
+        if norm in {m.upper().replace("-", "_") for m in members}:
+            return cls
+    return None
+
+
+def parse_report_verdict(report_text: str) -> str | None:
+    """The token on the report's ``VERDICT:`` line — the LAST recognized one, since the
+    contract places the real verdict last — or None if there is no ``VERDICT:`` line."""
+    matches = _VERDICT_LINE_RE.findall(report_text)
+    if not matches:
+        return None
+    known = [t for t in matches if _verdict_class(t) is not None]
+    return known[-1] if known else matches[-1]
+
+
 def verdict_status(report_text: str, gt_verdict: str) -> str:
-    """``"found"`` if the report states the ground-truth verdict, else
-    ``"not_emitted"`` (a signal that SIFT must output one — NOT a failure)."""
-    pat = r"(?<![A-Za-z])" + re.escape(gt_verdict.strip()) + r"(?![A-Za-z])"
-    return "found" if re.search(pat, report_text, re.IGNORECASE) else "not_emitted"
+    """``"found"`` iff the report's parsed ``VERDICT:`` token is in the SAME semantic
+    class as the ground-truth verdict; otherwise ``"not_emitted"``.
+
+    Parses the explicit ``VERDICT:`` line ONLY (never a prose substring), so a benign
+    ``VERDICT: NON_MALICE`` is never mis-scored as ``MALICE`` and any synonym within a
+    class matches. A present-but-wrong-class verdict returns ``"not_emitted"`` — no
+    correct verdict was emitted."""
+    token = parse_report_verdict(report_text)
+    if token is None:
+        return "not_emitted"
+    gt_class = _verdict_class(gt_verdict)
+    return "found" if (gt_class is not None and _verdict_class(token) == gt_class) else "not_emitted"
+
+
+def _mitre_satisfied(gt_code: str, found: set[str]) -> bool:
+    """Is a ground-truth technique satisfied by the report's extracted codes?
+
+    Hierarchy-aware: an exact hit always counts; additionally, when the GT code is a
+    PARENT (no ``.sub`` part) it is satisfied by ANY reported sub-technique of it, since
+    a sub-technique entails its parent (e.g. report ``T1567.002`` satisfies GT ``T1567``).
+    The looser reverse — a reported parent satisfying a GT *sub* — is NOT credited, nor is
+    a sibling sub (``T1585.002`` never satisfies GT ``T1585.001``); we never reward a
+    mapping vaguer or different than the key requires.
+    """
+    gt = gt_code.upper()
+    if gt in found:
+        return True
+    if "." not in gt:  # GT is a parent -> any reported sub-technique of it counts
+        return any(f.startswith(gt + ".") for f in found)
+    return False
 
 
 def mitre_recall(report_text: str, ttps: list[str]) -> tuple[dict[str, bool], int, int]:
-    """Per-technique presence map + (present, total)."""
+    """Per-technique presence map + (present, total).
+
+    Matching is MITRE-hierarchy aware via :func:`_mitre_satisfied`: a GT parent code is
+    satisfied by an exact hit OR any reported sub-technique of it; a GT sub code needs an
+    exact hit. Raw extraction (:func:`extract_mitre`) stays literal — the hierarchy logic
+    lives only here, at the recall/credit layer."""
     found = extract_mitre(report_text)
-    present = {t: (t.upper() in found) for t in ttps}
+    present = {t: _mitre_satisfied(t, found) for t in ttps}
     return present, sum(present.values()), len(ttps)
 
 

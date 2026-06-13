@@ -168,13 +168,34 @@ class TestFabrication(unittest.TestCase):
 # Required test 5 — verdict present / absent -> found / not_emitted.
 # ---------------------------------------------------------------------------
 class TestVerdict(unittest.TestCase):
-    def test_verdict_present(self):
-        self.assertEqual(scorer.verdict_status("Final verdict: MALICE.", "MALICE"), "found")
-        self.assertEqual(scorer.verdict_status("we judge this malice", "MALICE"), "found")  # case-insensitive
+    def test_verdict_line_correct_class_is_found(self):
+        rpt = "## 8. Conclusion\n...\nVERDICT: MALICE — act: HIGH, attribution: MODERATE"
+        self.assertEqual(scorer.verdict_status(rpt, "MALICE"), "found")
 
-    def test_verdict_absent_is_not_emitted(self):
+    def test_inline_verdict_phrase_is_found(self):
+        self.assertEqual(scorer.verdict_status("Final verdict: MALICE.", "MALICE"), "found")
+
+    def test_synonym_within_class_is_found(self):
+        self.assertEqual(scorer.verdict_status("VERDICT: MALICIOUS", "MALICE"), "found")
+
+    def test_prose_without_verdict_line_is_not_emitted(self):
+        # Prose no longer counts — only the explicit VERDICT: line is parsed.
         self.assertEqual(scorer.verdict_status("the activity is malicious", "MALICE"), "not_emitted")
         self.assertEqual(scorer.verdict_status("no categorical label here", "MALICE"), "not_emitted")
+
+    def test_non_malice_is_not_misread_as_malice(self):
+        # Phase 1.3 collision fix: NON_MALICE contains the substring "MALICE" but must NOT
+        # score as the malicious verdict, and "not malicious" prose must not either.
+        rpt = "VERDICT: NON_MALICE — act: LOW, attribution: LOW\nThe activity is not malicious."
+        self.assertEqual(scorer.verdict_status(rpt, "MALICE"), "not_emitted")
+
+    def test_non_malice_matches_its_own_class(self):
+        self.assertEqual(scorer.verdict_status("VERDICT: NON_MALICE", "NON_MALICE"), "found")
+
+    def test_last_verdict_line_wins_over_template_placeholder(self):
+        # A restated format line (placeholder) before the real verdict must not win.
+        rpt = "format: VERDICT: <TOKEN>\n...\nVERDICT: MALICE — act: HIGH, attribution: MODERATE"
+        self.assertEqual(scorer.verdict_status(rpt, "MALICE"), "found")
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +233,23 @@ class TestMitre(unittest.TestCase):
     def test_zero_when_no_codes_in_report(self):
         present, found, total = scorer.mitre_recall("prose with no technique codes", ["T1048", "T1567"])
         self.assertEqual((found, total), (0, 2))
+
+    def test_subtechnique_in_report_credits_parent_gt(self):
+        # GT wants the parent T1567; the report names a sub-technique T1567.002 -> credited.
+        present, found, total = scorer.mitre_recall("exfil via T1567.002 web service", ["T1567"])
+        self.assertTrue(present["T1567"])
+        self.assertEqual((found, total), (1, 1))
+
+    def test_parent_in_report_does_not_credit_subtechnique_gt(self):
+        # GT wants the specific sub T1595.001; report names only the parent T1595 -> NOT credited.
+        present, found, total = scorer.mitre_recall("active scanning T1595 seen", ["T1595.001"])
+        self.assertFalse(present["T1595.001"])
+        self.assertEqual((found, total), (0, 1))
+
+    def test_sibling_subtechnique_does_not_credit(self):
+        # T1585.002 (sibling) must not satisfy a GT of T1585.001.
+        present, found, total = scorer.mitre_recall("created accounts T1585.002", ["T1585.001"])
+        self.assertFalse(present["T1585.001"])
 
 
 if __name__ == "__main__":

@@ -7,7 +7,8 @@ eval:
 	ssh $(VM) 'cd ~/protocol-sift-evals && braintrust eval eval_protocol_sift.py'
 
 test:
-	pytest -q
+	cd scoring && python3 -m unittest discover -v
+	cd trace_enrich && python3 -m unittest discover -v
 
 manifests:
 	ssh $(VM) 'find /home/ubuntu/Downloads -type f | sort' > dataset/manifest.txt

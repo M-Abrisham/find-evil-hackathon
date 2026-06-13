@@ -1,0 +1,28 @@
+# PLAYBOOK FACTORY worklist -- all 24 on-box categories from PLAYBOOK-GENERATOR.md section 3.
+# Format: <kebab-id>|<Plain Name -- short description passed verbatim to the generator>|<pre-mapped SIFT tool list from section 3, passed verbatim as generator arg 3>
+# Order: categories with plenty of public solved-case evidence first; scarce-evidence ones last.
+# BUILD-TIME TOOLING ONLY -- do NOT commit to the team repo.
+insider-threat-data-theft|Insider Threat, Fraud & Data Theft -- a trusted insider steals or leaks data (USB, cloud sync, webmail, printing) or commits fraud|RECmd USB, LECmd/JLECmd/SBECmd, SQLECmd, MFTECmd $J
+web-server-compromise|Web / Perimeter & Server Compromise -- an internet-facing web or perimeter server is breached (webshell, exploited service, defacement)|TSK, log2timeline (apache/nginx/iis), iisGeolocate, yara, bstrings
+memory-forensics|Memory (RAM) Forensics -- triage a captured memory image for rogue processes, injected code, rootkits and network residue|Volatility3, Memory Baseliner, bulk_extractor, yara
+malware-analysis-triage|Malware Analysis & Triage -- static and behavioral triage of suspicious executables, scripts and documents found on evidence|radare2, pev/pefile, yara, densityscout, pdf-tools, upx-ucl, ssdeep
+ransomware-destructive|Impact, Ransomware & Destructive Attacks -- mass encryption, ransom notes, wipers and sabotage: prove what ran, what was hit, what is recoverable|MFTECmd $J, EvtxECmd, yara, vss_carver, Volatility3
+windows-execution-artifacts|Windows Artifacts -- Execution & User Activity -- prove what programs ran and what the user did (amcache, shimcache, lnk, jump lists, shellbags)|AmcacheParser, AppCompatCacheParser, LECmd, JLECmd, SBECmd, RBCmd, WxTCmd
+windows-event-logs|Windows Event Logs (EVTX/ETW) -- logons, lateral movement, service installs, scheduled tasks and log clearing read from event logs|EvtxECmd, libevtx-tools, python-evtx, psort.py
+windows-registry-persistence|Windows Registry & Persistence -- autoruns, run keys, services and other persistence mechanisms in registry hives|RECmd, rla, libregf-tools, Volatility3 printkey
+browser-email-documents|Browser, Email & Document Forensics -- browsing history, downloads, phishing email and malicious document analysis|SQLECmd, pyhindsight, libpff/pst-utils, exiftool, pdfid/pdf-parser, sqlite-carver
+network-forensics|Network Forensics -- PCAP and flow analysis: beaconing, C2 channels, lateral movement and exfiltration over the wire|Wireshark, tcpdump/tcpflow, ngrep, nfdump, bulk_extractor
+file-recovery-carving|File Recovery, Carving & Data Reduction -- recover deleted files, carve unallocated space, reduce large evidence sets to what matters|tsk_recover, photorec, foremost, scalpel, bulk_extractor, blkls
+disk-filesystem|Endpoint / Disk & File System -- file-system structures (MFT, partitions, deleted and hidden data) on disk images|MFTECmd, TSK (fls/icat/istat/fsstat), mmls, disktype, bdemount
+attack-lifecycle-hunting|Attack-Lifecycle Hunting (ATT&CK) -- reconstruct the full intrusion timeline across artifacts and map it to ATT&CK tactics|EZ Tools suite, Volatility3, log2timeline/psort.py, yara
+cloud-identity-saas|Cloud Identity & SaaS -- compromised cloud accounts, token/OAuth abuse and SaaS audit-log investigation|log2timeline cloud parsers, jq, pandas, SQLECmd
+cloud-iaas-control-plane|Cloud IaaS Control-Plane & Data -- AWS/Azure/GCP control-plane abuse, rogue resources and cloud data exposure from exported logs|log2timeline (cloudtrail/azure/gcp), jq, pandas, bulk_extractor
+containers-supply-chain|Containers, CI/CD & Software Supply Chain -- container escapes, poisoned images and compromised build pipelines|log2timeline docker, TSK overlay2, yara, jq, bulk_extractor
+steganography-data-hiding|Steganography, Data-Hiding & Encryption -- payloads hidden in media, encrypted containers and covert data channels|outguess, exiftool, ssdeep, bulk_extractor, openssl
+virtualization-mobile|Virtualization & Mobile/Embedded -- virtual-machine disk and memory artifacts plus Android/iOS device triage|imagemounter, mvt-android/mvt-ios, ufade, Volatility3 .vmem, SQLECmd, radare2
+active-directory-domain|Active Directory & Domain -- domain compromise: credential theft, Kerberos abuse, NTDS extraction and domain-controller artifacts|EvtxECmd, RECmd, MFTECmd, Volatility3, libesedb-tools (NTDS)
+targeted-intrusion-apt|Targeted Intrusion / APT & Specialized -- long-dwell targeted attacks with advanced tradecraft and anti-forensics|Volatility3 + Memory Baseliner, log2timeline, EZ Tools, yara
+acquisition-custody|Acquisition, Custody & Cross-Platform Synthesis -- forensically sound imaging, verification, chain of custody and cross-evidence synthesis|ewfacquire, dc3dd, ewfverify, hashdeep, log2timeline/psort.py, vss_carver
+linux-host-forensics|Linux / Unix Host Forensics -- Linux logons, persistence, logs, cron/systemd and file-system artifacts|TSK, log2timeline (syslog/utmp/journal), Volatility3 linux.*, yara
+macos-forensics|macOS Forensics -- macOS plists, fseventsd, unified logs, login items and persistence|mac_apt, log2timeline (plist/fseventsd/bsm), Volatility3 mac.*
+threat-hunting-ioc-sweeps|Threat Hunting & IOC Sweeps -- proactive YARA, hash and IOC sweeps across collected evidence|yara, Memory Baseliner, hashdeep/ssdeep, RECmd Kroll_Batch

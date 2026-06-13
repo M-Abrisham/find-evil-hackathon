@@ -49,12 +49,13 @@ for _p in (_HERE, os.path.join(_REPO, "scoring")):
         sys.path.insert(0, _p)
 
 try:  # package-relative first
-    from . import bt_client, bashlog, registry, provenance  # type: ignore
+    from . import bt_client, bashlog, registry, provenance, tool_access  # type: ignore
 except Exception:  # pragma: no cover - standalone fallback
     import bt_client  # type: ignore
     import bashlog  # type: ignore
     import registry  # type: ignore
     import provenance  # type: ignore
+    import tool_access  # type: ignore
 
 # scorer is loaded lazily (only when ground truth is present) so a no-scores run
 # never needs scoring/ on the path. provenance.py already vendors its own loader.
@@ -152,6 +153,19 @@ def _label_tool_span(span: dict, bash_log: Dict[str, dict]) -> Dict[str, Any]:
             enrich["outcome"] = "unknown"
             enrich["outcome_source"] = "none"
     tags.append(f"outcome:{enrich['outcome']}")
+
+    # Tool-ACCESS failures: did the call fail because the TOOL was inaccessible
+    # (absent / broken deps / GUI-headless / egress-blocked), as opposed to a
+    # tool that ran and errored on the evidence? Refines `errored`, never
+    # replaces it. Only computable when the raw-bash record is joined.
+    if entry is not None:
+        failures = tool_access.classify(
+            entry.get("stderr", ""), entry.get("stdout", ""), command or ""
+        )
+        if failures:
+            access = tool_access.label_fields(failures)
+            enrich.update(access["enrich"])
+            tags.extend(access["tags"])
 
     return {"metadata": {"enrich": enrich}, "tags": tags}
 
@@ -413,6 +427,22 @@ def build_plan(
             "enrichment (tags/phases/outcomes/rollup) still applied"
         )
 
+    # 4b. Run-level tool-access rollup: every tool the agent reached for but
+    # could not use, aggregated across spans (count + reasons + evidence).
+    unavailable: Dict[str, Dict[str, Any]] = {}
+    for pair in labelled:
+        ta = pair["label"]["metadata"]["enrich"].get("tool_access") or {}
+        for f in ta.get("failures", []):
+            key = f"{f['token']}|{f['reason']}"
+            rec = unavailable.setdefault(
+                key, {"token": f["token"], "reason": f["reason"],
+                      "count": 0, "evidence": f["evidence"]}
+            )
+            rec["count"] += 1
+    rollup["tool_unavailable"] = sorted(
+        unavailable.values(), key=lambda r: (-r["count"], r["token"])
+    )
+
     # 5. Assemble root metadata + scores + tags.
     plan.root_metadata = {
         "enrich_version": 1,
@@ -426,6 +456,13 @@ def build_plan(
     plan.root_tags = ["enriched"]
     if prov_summary["candidate_fabrication_count"]:
         plan.root_tags.append("has_candidate_fabrications")
+    if rollup["tool_unavailable"]:
+        plan.root_tags.append("has_tool_unavailable")
+        plan.notes.append(
+            "tool-access failures: "
+            + ", ".join(f"{r['token']} ({r['reason']} ×{r['count']})"
+                        for r in rollup["tool_unavailable"])
+        )
 
     return plan
 
@@ -620,6 +657,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             f"from_case_input={prov.get('iocs_from_case_input')} "
             f"candidate_fabrications={prov.get('candidate_fabrication_count')}"
         )
+        tu = rollup.get("tool_unavailable") or []
+        if tu:
+            print("tool_unavailable:")
+            for r in tu:
+                print(f"  {r['token']:<18} {r['reason']:<18} ×{r['count']}  {r['evidence']}")
+        else:
+            print("tool_unavailable: (none)")
         print(f"per-span writes: {len(plan.span_writes)} (each: skill/phase/outcome)")
         print(f"total events   : {len(plan.to_events())}")
         for note in plan.notes:

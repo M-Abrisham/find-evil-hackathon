@@ -252,5 +252,140 @@ class TestMitre(unittest.TestCase):
         self.assertFalse(present["T1585.001"])
 
 
+# ============================================================================
+# MITRE reconciliation: table parser (F5), citation-precision (F1),
+# id-validity (F4), recall-isolation, and the F3 key double-count regression.
+# All ADDITIVE — the 32 pre-existing tests are untouched.
+# ============================================================================
+class TestMitreTableParse(unittest.TestCase):
+    REPORT_007 = (
+        "| Technique | T-code | Evidencing artifact |\n"
+        "|---|---|---|\n"
+        "| Establish Accounts: Email Accounts | T1585.002 | ART-002 (mailbox) |\n"
+        "| Hide Infrastructure | T1665 | ART-001 (proxy) |\n"
+        "| Acquire Infrastructure: Web Services | T1583.006 | ART-001 / ART-002 (overlaps T1665) |\n"
+        "\n> Only techniques tied to a specific artifact are mapped; "
+        "Network Sniffing (T1040) is omitted — no recall-padding.\n"
+    )
+
+    def test_extracts_three_rows_and_excludes_prose_tcode(self):
+        rows = scorer.parse_mitre_table(self.REPORT_007)
+        self.assertEqual([r.code for r in rows], ["T1585.002", "T1665", "T1583.006"])
+        self.assertNotIn("T1040", [r.code for r in rows])  # prose-note code is NOT a row
+
+    def test_code_taken_from_column2_not_citation_cell(self):
+        rows = scorer.parse_mitre_table(self.REPORT_007)
+        self.assertEqual(rows[2].code, "T1583.006")  # NOT T1665 from the citation cell
+
+    def test_multi_citation_cell_parsed(self):
+        rows = scorer.parse_mitre_table(
+            "| Technique | T-code | Evidencing artifact |\n|---|---|---|\n"
+            "| Network Sniffing | T1040 | ART-002 (cap); ART-004 (winpcap) |\n")
+        self.assertEqual(rows[0].citations, ["ART-002", "ART-004"])
+
+    def test_locates_mitre_table_not_other_tables(self):
+        doc = ("| Type | Value | Confidence |\n|---|---|---|\n| ip_address | 1.2.3.4 | CONFIRMED |\n\n"
+               "| Technique | T-code | Evidencing artifact |\n|---|---|---|\n"
+               "| Network Sniffing | T1040 | ART-002 |\n")
+        rows = scorer.parse_mitre_table(doc)
+        self.assertEqual([r.code for r in rows], ["T1040"])
+
+    def test_placeholder_row_skipped(self):
+        rows = scorer.parse_mitre_table(
+            "| Technique | T-code | Evidencing artifact |\n|---|---|---|\n"
+            "| <technique name> | T#### | <ART-id / tool output> |\n")
+        self.assertEqual(rows, [])
+
+    def test_empty_when_no_mitre_table(self):
+        self.assertEqual(scorer.parse_mitre_table("prose, no table"), [])
+
+
+class TestMitrePrecision(unittest.TestCase):
+    def _tbl(self, *body):
+        return ("| Technique | T-code | Evidencing artifact |\n|---|---|---|\n"
+                + "".join(body))
+
+    def test_all_rows_cited_is_1_0(self):
+        p, g, e, ung = scorer.mitre_precision(self._tbl(
+            "| A | T1040 | ART-001 |\n", "| B | T1557 | ART-002 |\n"))
+        self.assertEqual((p, g, e, ung), (1.0, 2, 2, []))
+
+    def test_uncited_row_is_ungrounded(self):
+        p, g, e, ung = scorer.mitre_precision(self._tbl(
+            "| A | T1040 | ART-001 |\n", "| B | T1557 |  |\n"))
+        self.assertEqual((p, g, e), (0.5, 1, 2))
+        self.assertEqual(ung, ["T1557"])
+
+    def test_prose_tcode_outside_table_ignored(self):
+        text = self._tbl("| A | T1040 | ART-001 |\n") + "\n> T1592 deliberately not padded.\n"
+        p, g, e, ung = scorer.mitre_precision(text)
+        self.assertEqual((p, e), (1.0, 1))  # T1592 not counted as an emitted row
+
+    def test_multi_artid_cell_grounded(self):
+        p, _, _, ung = scorer.mitre_precision(self._tbl("| A | T1040 | ART-001 / ART-002 (cap) |\n"))
+        self.assertEqual((p, ung), (1.0, []))
+
+    def test_tool_output_citation_without_artid_grounded(self):
+        p, _, _, ung = scorer.mitre_precision(self._tbl("| A | T1040 | `WinPcap` driver loaded |\n"))
+        self.assertEqual((p, ung), (1.0, []))
+
+    def test_report_001_precision_high_despite_key_mismatch(self):
+        # off-key codes, all ART-cited -> precision 1.0 (anti-Goodhart proof)
+        p, g, e, ung = scorer.mitre_precision(self._tbl(
+            "| Network Sniffing | T1040 | ART-002 |\n",
+            "| Adversary-in-the-Middle | T1557 | ART-002 |\n",
+            "| Obtain Capabilities: Tool | T1588.002 | ART-004 |\n",
+            "| Indicator Removal: File Deletion | T1070.004 | ART-004 |\n",
+            "| Gather Victim Host Information | T1592 | ART-004 |\n"))
+        self.assertEqual((p, g, e, ung), (1.0, 5, 5, []))
+
+    def test_no_table_precision_is_none(self):
+        p, g, e, ung = scorer.mitre_precision("recall-only report, no table")
+        self.assertEqual((p, g, e, ung), (None, 0, 0, []))
+
+
+class TestMitreValidity(unittest.TestCase):
+    def test_valid_real_code_not_flagged(self):
+        self.assertEqual(scorer.mitre_validity("we saw T1040 and T1567.002"), [])
+
+    def test_offkey_but_valid_code_not_flagged(self):  # ANTI-GOODHART GUARD
+        self.assertEqual(scorer.mitre_validity("T1557 T1588.002 T1592"), [])
+
+    def test_fabricated_wellformed_code_flagged(self):
+        self.assertEqual(scorer.mitre_validity("technique T9999 observed"), ["T9999"])
+
+    def test_truncation_artifact_flagged(self):
+        self.assertEqual(scorer.extract_mitre("mapped T1234.5678"), {"T1234"})
+        self.assertEqual(scorer.mitre_validity("mapped T1234.5678"), ["T1234"])
+
+    def test_catalog_contains_known_ids_and_excludes_fakes(self):
+        self.assertIn("T1040", scorer.VALID_MITRE_IDS)
+        self.assertIn("T1595.001", scorer.VALID_MITRE_IDS)
+        self.assertNotIn("T9999", scorer.VALID_MITRE_IDS)
+
+
+class TestMitreDiagnosticsRecallIsolation(unittest.TestCase):
+    def test_score_case_populates_new_fields_without_moving_recall(self):
+        report = ("| Technique | T-code | Evidencing artifact |\n|---|---|---|\n"
+                  "| Network Sniffing | T1040 | ART-001 |\n"
+                  "| Fake | T9999 |  |\n")
+        g = gt(ttps=["T1040"])
+        res = scorer.score_case("C", g, input_text="", report_text=report)
+        self.assertEqual((res.mitre_found, res.mitre_total), (1, 1))   # recall unchanged
+        self.assertEqual(res.invalid_mitre_count, 1)
+        self.assertEqual(res.invalid_mitre_codes, ["T9999"])
+        self.assertEqual(res.mitre_emitted, 2)
+        self.assertEqual(res.mitre_ungrounded, ["T9999"])             # the uncited row
+        self.assertEqual(res.mitre_precision, 0.5)
+
+    def test_duplicate_parent_and_sub_in_gt_double_counts(self):
+        # F3 hazard pin (asserts CURRENT behavior; no scorer logic changed):
+        # a key listing BOTH T1595 and its sub makes one technique occupy two slots.
+        _, f, t = scorer.mitre_recall("scanning T1595.001", ["T1595", "T1595.001"])
+        self.assertEqual((f, t), (2, 2))   # sub credits parent slot + exact sub slot
+        _, f, t = scorer.mitre_recall("scanning T1595", ["T1595", "T1595.001"])
+        self.assertEqual((f, t), (1, 2))   # parent does NOT credit the GT sub
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

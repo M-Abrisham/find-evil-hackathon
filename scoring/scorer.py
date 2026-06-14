@@ -204,6 +204,224 @@ def extract_mitre(text: str) -> set[str]:
 
 
 # =============================================================================
+# MITRE table parsing + citation-precision + id-validity.
+# ADDITIVE: recall (extract_mitre / _mitre_satisfied / mitre_recall) is UNCHANGED.
+# precision + validity are KEY-INDEPENDENT — they never read gt["mitre_ttps"].
+# =============================================================================
+ART_ID_RE = re.compile(r"\bART-\d{2,}\b", re.IGNORECASE)
+_MITRE_HDR_RE = re.compile(
+    r"^\s*\|\s*technique\s*\|\s*t-?code\s*\|\s*evidencing\s+artifact\s*\|\s*$",
+    re.IGNORECASE,
+)
+_MITRE_SEP_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
+
+
+@dataclass
+class MitreRow:
+    technique_name: str
+    code: str
+    evidencing: str
+    citations: list[str]
+
+    def to_dict(self) -> dict:
+        return self.__dict__.copy()
+
+
+def _split_md_cells(row: str) -> list[str]:
+    s = row.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
+
+
+def parse_mitre_table(report_text: str) -> list[MitreRow]:
+    """Structured rows of the emitted MITRE table ONLY.
+
+    Located by its exact contract header; the body is bounded to contiguous
+    pipe-rows, so the trailing prose ``> Only techniques ...`` note (which cites
+    bare T-codes precisely to explain what was *excluded*) is never a row. The
+    code is read from COLUMN 2 only, so a second T-code inside a citation cell
+    (e.g. ``... overlaps T1665``) can never displace the row's real code.
+
+    Substrate for the citation-precision metric; RECALL still uses the lenient
+    :func:`extract_mitre` (unchanged), so existing tests stay green.
+    """
+    lines = report_text.splitlines()
+    rows: list[MitreRow] = []
+    i = 0
+    while i < len(lines):
+        if _MITRE_HDR_RE.match(lines[i]):
+            j = i + 1
+            if j < len(lines) and _MITRE_SEP_RE.match(lines[j]):
+                j += 1
+            while j < len(lines) and lines[j].lstrip().startswith("|"):
+                cells = _split_md_cells(lines[j])
+                if len(cells) >= 3:
+                    code_m = MITRE_RE.search(cells[1])  # COLUMN 2 only
+                    if code_m:  # skips the "<technique name> | T#### | ..." placeholder
+                        rows.append(MitreRow(
+                            technique_name=cells[0],
+                            code=code_m.group(0).upper(),
+                            evidencing=cells[2],
+                            citations=[c.upper() for c in ART_ID_RE.findall(cells[2])],
+                        ))
+                j += 1
+            i = j
+            continue
+        i += 1
+    return rows
+
+
+def _row_grounded(evidencing_cell: str) -> bool:
+    """A MITRE row is grounded iff its Evidencing cell cites an ART-id OR a
+    tool-output token (the contract allows "ART-id or tool output"). Empty or
+    placeholder cells are not grounded."""
+    cell = evidencing_cell.strip()
+    if not cell or cell in {"-", "—", "N/A", "<ART-id / tool output>"}:
+        return False
+    if ART_ID_RE.search(cell):
+        return True
+    return "`" in cell  # tool-output fallback: a backtick-quoted tool/value token
+
+
+def mitre_precision(report_text: str) -> tuple[float | None, int, int, list[str]]:
+    """Grounded-citation precision over the EMITTED MITRE table only.
+
+    Returns ``(precision, grounded, emitted, ungrounded_codes)``. ``precision`` is
+    ``None`` when the report has no MITRE table (n/a — never a false 0). NEVER reads
+    ``gt``: a row is judged solely by whether it cites evidence, so a correct
+    evidence-cited mapping absent from the answer key still scores 1.0 (the
+    anti-Goodhart property). The only thing penalised is an uncited row — i.e.
+    literal recall-padding.
+    """
+    rows = parse_mitre_table(report_text)
+    if not rows:
+        return None, 0, 0, []
+    grounded = 0
+    ungrounded: list[str] = []
+    for r in rows:
+        if _row_grounded(r.evidencing):
+            grounded += 1
+        else:
+            ungrounded.append(r.code)
+    return grounded / len(rows), grounded, len(rows), ungrounded
+
+
+# --- Frozen offline ATT&CK Enterprise technique-id catalog -------------------
+# SOURCE: MITRE ATT&CK Enterprise STIX bundle (mitre/cti enterprise-attack.json),
+# the non-deprecated / non-revoked attack-pattern external_ids. Generated ONCE,
+# offline, committed as a static literal so the scorer keeps NO runtime/network
+# dependency (same policy as VERDICT_CLASSES). Refresh only on an intentional
+# ATT&CK version bump. Key-INDEPENDENT: a SUPERSET of every answer-key code AND of
+# the agent's defensible off-key codes, so membership never penalises a correct
+# mapping merely absent from the key.
+VALID_MITRE_IDS: frozenset[str] = frozenset({
+    "T1001", "T1001.001", "T1001.002", "T1001.003", "T1003", "T1003.001", "T1003.002", "T1003.003",
+    "T1003.004", "T1003.005", "T1003.006", "T1003.007", "T1003.008", "T1005", "T1006", "T1007",
+    "T1008", "T1010", "T1011", "T1011.001", "T1012", "T1014", "T1016", "T1016.001",
+    "T1016.002", "T1018", "T1020", "T1020.001", "T1021", "T1021.001", "T1021.002", "T1021.003",
+    "T1021.004", "T1021.005", "T1021.006", "T1021.007", "T1021.008", "T1025", "T1027", "T1027.001",
+    "T1027.002", "T1027.003", "T1027.004", "T1027.005", "T1027.006", "T1027.007", "T1027.008", "T1027.009",
+    "T1027.010", "T1027.011", "T1027.012", "T1027.013", "T1027.014", "T1027.015", "T1027.016", "T1027.017",
+    "T1027.018", "T1029", "T1030", "T1033", "T1036", "T1036.001", "T1036.002", "T1036.003",
+    "T1036.004", "T1036.005", "T1036.006", "T1036.007", "T1036.008", "T1036.009", "T1036.010", "T1036.011",
+    "T1036.012", "T1037", "T1037.001", "T1037.002", "T1037.003", "T1037.004", "T1037.005", "T1039",
+    "T1040", "T1041", "T1046", "T1047", "T1048", "T1048.001", "T1048.002", "T1048.003",
+    "T1049", "T1052", "T1052.001", "T1053", "T1053.002", "T1053.003", "T1053.005", "T1053.006",
+    "T1053.007", "T1055", "T1055.001", "T1055.002", "T1055.003", "T1055.004", "T1055.005", "T1055.008",
+    "T1055.009", "T1055.011", "T1055.012", "T1055.013", "T1055.014", "T1055.015", "T1056", "T1056.001",
+    "T1056.002", "T1056.003", "T1056.004", "T1057", "T1059", "T1059.001", "T1059.002", "T1059.003",
+    "T1059.004", "T1059.005", "T1059.006", "T1059.007", "T1059.008", "T1059.009", "T1059.010", "T1059.011",
+    "T1059.012", "T1059.013", "T1068", "T1069", "T1069.001", "T1069.002", "T1069.003", "T1070",
+    "T1070.003", "T1070.004", "T1070.005", "T1070.006", "T1070.007", "T1070.008", "T1070.009", "T1070.010",
+    "T1071", "T1071.001", "T1071.002", "T1071.003", "T1071.004", "T1071.005", "T1072", "T1074",
+    "T1074.001", "T1074.002", "T1078", "T1078.001", "T1078.002", "T1078.003", "T1078.004", "T1080",
+    "T1082", "T1083", "T1087", "T1087.001", "T1087.002", "T1087.003", "T1087.004", "T1090",
+    "T1090.001", "T1090.002", "T1090.003", "T1090.004", "T1091", "T1092", "T1095", "T1098",
+    "T1098.001", "T1098.002", "T1098.003", "T1098.004", "T1098.005", "T1098.006", "T1098.007", "T1102",
+    "T1102.001", "T1102.002", "T1102.003", "T1104", "T1105", "T1106", "T1110", "T1110.001",
+    "T1110.002", "T1110.003", "T1110.004", "T1111", "T1112", "T1113", "T1114", "T1114.001",
+    "T1114.002", "T1114.003", "T1115", "T1119", "T1120", "T1123", "T1124", "T1125",
+    "T1127", "T1127.001", "T1127.002", "T1127.003", "T1129", "T1132", "T1132.001", "T1132.002",
+    "T1133", "T1134", "T1134.001", "T1134.002", "T1134.003", "T1134.004", "T1134.005", "T1135",
+    "T1136", "T1136.001", "T1136.002", "T1136.003", "T1137", "T1137.001", "T1137.002", "T1137.003",
+    "T1137.004", "T1137.005", "T1137.006", "T1140", "T1176", "T1176.001", "T1176.002", "T1185",
+    "T1187", "T1189", "T1190", "T1195", "T1195.001", "T1195.002", "T1195.003", "T1197",
+    "T1199", "T1200", "T1201", "T1202", "T1203", "T1204", "T1204.001", "T1204.002",
+    "T1204.003", "T1204.004", "T1204.005", "T1205", "T1205.001", "T1205.002", "T1207", "T1210",
+    "T1211", "T1212", "T1213", "T1213.001", "T1213.002", "T1213.003", "T1213.004", "T1213.005",
+    "T1213.006", "T1216", "T1216.001", "T1216.002", "T1217", "T1218", "T1218.001", "T1218.002",
+    "T1218.003", "T1218.004", "T1218.005", "T1218.007", "T1218.008", "T1218.009", "T1218.010", "T1218.011",
+    "T1218.012", "T1218.013", "T1218.014", "T1218.015", "T1219", "T1219.001", "T1219.002", "T1219.003",
+    "T1220", "T1221", "T1222", "T1222.001", "T1222.002", "T1480", "T1480.001", "T1480.002",
+    "T1482", "T1484", "T1484.001", "T1484.002", "T1485", "T1485.001", "T1486", "T1489",
+    "T1490", "T1491", "T1491.001", "T1491.002", "T1495", "T1496", "T1496.001", "T1496.002",
+    "T1496.003", "T1496.004", "T1497", "T1497.001", "T1497.002", "T1497.003", "T1498", "T1498.001",
+    "T1498.002", "T1499", "T1499.001", "T1499.002", "T1499.003", "T1499.004", "T1505", "T1505.001",
+    "T1505.002", "T1505.003", "T1505.004", "T1505.005", "T1505.006", "T1518", "T1518.001", "T1518.002",
+    "T1525", "T1526", "T1528", "T1529", "T1530", "T1531", "T1534", "T1535",
+    "T1537", "T1538", "T1539", "T1542", "T1542.001", "T1542.002", "T1542.003", "T1542.004",
+    "T1542.005", "T1543", "T1543.001", "T1543.002", "T1543.003", "T1543.004", "T1543.005", "T1546",
+    "T1546.001", "T1546.002", "T1546.003", "T1546.004", "T1546.005", "T1546.006", "T1546.007", "T1546.008",
+    "T1546.009", "T1546.010", "T1546.011", "T1546.012", "T1546.013", "T1546.014", "T1546.015", "T1546.016",
+    "T1546.017", "T1546.018", "T1547", "T1547.001", "T1547.002", "T1547.003", "T1547.004", "T1547.005",
+    "T1547.006", "T1547.007", "T1547.008", "T1547.009", "T1547.010", "T1547.012", "T1547.013", "T1547.014",
+    "T1547.015", "T1548", "T1548.001", "T1548.002", "T1548.003", "T1548.004", "T1548.005", "T1548.006",
+    "T1550", "T1550.001", "T1550.002", "T1550.003", "T1550.004", "T1552", "T1552.001", "T1552.002",
+    "T1552.003", "T1552.004", "T1552.005", "T1552.006", "T1552.007", "T1552.008", "T1553", "T1553.001",
+    "T1553.002", "T1553.003", "T1553.004", "T1553.005", "T1553.006", "T1554", "T1555", "T1555.001",
+    "T1555.002", "T1555.003", "T1555.004", "T1555.005", "T1555.006", "T1556", "T1556.001", "T1556.002",
+    "T1556.003", "T1556.004", "T1556.005", "T1556.006", "T1556.007", "T1556.008", "T1556.009", "T1557",
+    "T1557.001", "T1557.002", "T1557.003", "T1557.004", "T1558", "T1558.001", "T1558.002", "T1558.003",
+    "T1558.004", "T1558.005", "T1559", "T1559.001", "T1559.002", "T1559.003", "T1560", "T1560.001",
+    "T1560.002", "T1560.003", "T1561", "T1561.001", "T1561.002", "T1563", "T1563.001", "T1563.002",
+    "T1564", "T1564.001", "T1564.002", "T1564.003", "T1564.004", "T1564.005", "T1564.006", "T1564.007",
+    "T1564.008", "T1564.009", "T1564.010", "T1564.011", "T1564.012", "T1564.013", "T1564.014", "T1565",
+    "T1565.001", "T1565.002", "T1565.003", "T1566", "T1566.001", "T1566.002", "T1566.003", "T1566.004",
+    "T1567", "T1567.001", "T1567.002", "T1567.003", "T1567.004", "T1568", "T1568.001", "T1568.002",
+    "T1568.003", "T1569", "T1569.001", "T1569.002", "T1569.003", "T1570", "T1571", "T1572",
+    "T1573", "T1573.001", "T1573.002", "T1574", "T1574.001", "T1574.004", "T1574.005", "T1574.006",
+    "T1574.007", "T1574.008", "T1574.009", "T1574.010", "T1574.011", "T1574.012", "T1574.013", "T1574.014",
+    "T1578", "T1578.001", "T1578.002", "T1578.003", "T1578.004", "T1578.005", "T1580", "T1583",
+    "T1583.001", "T1583.002", "T1583.003", "T1583.004", "T1583.005", "T1583.006", "T1583.007", "T1583.008",
+    "T1584", "T1584.001", "T1584.002", "T1584.003", "T1584.004", "T1584.005", "T1584.006", "T1584.007",
+    "T1584.008", "T1585", "T1585.001", "T1585.002", "T1585.003", "T1586", "T1586.001", "T1586.002",
+    "T1586.003", "T1587", "T1587.001", "T1587.002", "T1587.003", "T1587.004", "T1588", "T1588.001",
+    "T1588.002", "T1588.003", "T1588.004", "T1588.005", "T1588.006", "T1588.007", "T1589", "T1589.001",
+    "T1589.002", "T1589.003", "T1590", "T1590.001", "T1590.002", "T1590.003", "T1590.004", "T1590.005",
+    "T1590.006", "T1591", "T1591.001", "T1591.002", "T1591.003", "T1591.004", "T1592", "T1592.001",
+    "T1592.002", "T1592.003", "T1592.004", "T1593", "T1593.001", "T1593.002", "T1593.003", "T1594",
+    "T1595", "T1595.001", "T1595.002", "T1595.003", "T1596", "T1596.001", "T1596.002", "T1596.003",
+    "T1596.004", "T1596.005", "T1597", "T1597.001", "T1597.002", "T1598", "T1598.001", "T1598.002",
+    "T1598.003", "T1598.004", "T1599", "T1599.001", "T1600", "T1600.001", "T1600.002", "T1601",
+    "T1601.001", "T1601.002", "T1602", "T1602.001", "T1602.002", "T1606", "T1606.001", "T1606.002",
+    "T1608", "T1608.001", "T1608.002", "T1608.003", "T1608.004", "T1608.005", "T1608.006", "T1609",
+    "T1610", "T1611", "T1612", "T1613", "T1614", "T1614.001", "T1615", "T1619",
+    "T1620", "T1621", "T1622", "T1647", "T1648", "T1649", "T1650", "T1651",
+    "T1652", "T1653", "T1654", "T1657", "T1659", "T1665", "T1666", "T1667",
+    "T1668", "T1669", "T1671", "T1673", "T1674", "T1675", "T1677", "T1678",
+    "T1679", "T1680", "T1681", "T1682", "T1683", "T1683.001", "T1683.002", "T1684",
+    "T1684.001", "T1684.002", "T1685", "T1685.001", "T1685.002", "T1685.003", "T1685.004", "T1685.005",
+    "T1685.006", "T1686", "T1686.001", "T1686.002", "T1686.003", "T1687", "T1688", "T1689",
+    "T1690",
+})
+
+
+def mitre_validity(report_text: str) -> list[str]:
+    """Extracted T-codes that are NOT real ATT&CK Enterprise ids (sorted).
+
+    Reuses :func:`extract_mitre` so it inspects the EXACT tokens the recall path
+    sees. Key-INDEPENDENT: asks only "is this a real ATT&CK id?", never "is it in
+    the answer key?" — so a valid-but-off-key code (e.g. report-001's T1557)
+    returns clean. Flags fabricated ids (T9999) and silent-truncation artefacts
+    (T1234.5678, which MITRE_RE degrades to the non-existent T1234).
+    """
+    return sorted(c for c in extract_mitre(report_text) if c not in VALID_MITRE_IDS)
+
+
+# =============================================================================
 # Presence tests — does an IOC value appear in a given haystack?
 # =============================================================================
 def _fuzzy_present(value: str, text: str, kind: str) -> bool:
@@ -387,6 +605,14 @@ class CaseResult:
     mitre_found: int
     mitre_total: int
     failures: list[dict] = field(default_factory=list)
+    # --- additive MITRE diagnostics: NEVER affect recall/verdict/IOC numbers ---
+    mitre_rows: list[dict] = field(default_factory=list)
+    mitre_emitted: int = 0
+    mitre_grounded: int = 0
+    mitre_precision: float | None = None
+    mitre_ungrounded: list[str] = field(default_factory=list)
+    invalid_mitre_codes: list[str] = field(default_factory=list)
+    invalid_mitre_count: int = 0
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()
@@ -431,6 +657,9 @@ def score_case(
     present, mitre_found, mitre_total = mitre_recall(
         report_text, gt.get("mitre_ttps", [])
     )
+    mitre_table_rows = parse_mitre_table(report_text)
+    m_prec, m_grounded, m_emitted, m_ungrounded = mitre_precision(report_text)
+    invalid_codes = mitre_validity(report_text)
     total_iocs = len(records)
 
     return CaseResult(
@@ -451,6 +680,13 @@ def score_case(
         mitre_found=mitre_found,
         mitre_total=mitre_total,
         failures=failures,
+        mitre_rows=[r.to_dict() for r in mitre_table_rows],
+        mitre_emitted=m_emitted,
+        mitre_grounded=m_grounded,
+        mitre_precision=m_prec,
+        mitre_ungrounded=m_ungrounded,
+        invalid_mitre_codes=invalid_codes,
+        invalid_mitre_count=len(invalid_codes),
     )
 
 
@@ -522,6 +758,8 @@ def aggregate(results: list[CaseResult]) -> dict:
     fi = sum(r.found_total for r in results)
     mt = sum(r.mitre_total for r in results)
     mf = sum(r.mitre_found for r in results)
+    mg = sum(r.mitre_grounded for r in results)
+    me = sum(r.mitre_emitted for r in results)
     return {
         "findable_recall_micro": (ff / sf) if sf else None,
         "findable_found": ff,
@@ -532,6 +770,10 @@ def aggregate(results: list[CaseResult]) -> dict:
         "mitre_recall_micro": (mf / mt) if mt else None,
         "mitre_found": mf,
         "mitre_total": mt,
+        "mitre_precision_micro": (mg / me) if me else None,
+        "mitre_grounded_total": mg,
+        "mitre_emitted_total": me,
+        "invalid_mitre_total": sum(r.invalid_mitre_count for r in results),
         "full_recall_micro": (fi / si) if si else None,
         "full_found": fi,
         "full_total": si,
@@ -610,6 +852,29 @@ def render(results: list[CaseResult], agg: dict) -> str:
             cov = c["covers_input_hosts"]
             note = f"covers input host(s): {', '.join(cov)}" if cov else "not derivable from input hosts"
             lines.append(f"  {cid}  {c['value']:<20} ({note})")
+
+    # MITRE precision (grounded rows / emitted rows; key-independent).
+    lines.append("")
+    lines.append("MITRE PRECISION  (grounded rows / emitted rows; key-independent — evidence citation only)")
+    lines.append("-" * 92)
+    for r in results:
+        if r.mitre_precision is None:
+            lines.append(f"  {r.case_id}  (no MITRE table — n/a)")
+        else:
+            extra = f"   UNGROUNDED: {chr(44).join(r.mitre_ungrounded)}" if r.mitre_ungrounded else ""
+            lines.append(f"  {r.case_id}  {_frac(r.mitre_grounded, r.mitre_emitted)}{extra}")
+
+    # Invalid MITRE codes (T-code shape but not a real ATT&CK id).
+    lines.append("")
+    lines.append("INVALID MITRE CODES  (T-code shape but not a real ATT&CK Enterprise id)")
+    lines.append("-" * 92)
+    any_inv = False
+    for r in results:
+        for c in r.invalid_mitre_codes:
+            any_inv = True
+            lines.append(f"  {r.case_id}  {c}")
+    if not any_inv:
+        lines.append("  (none — every emitted code is a real ATT&CK id)")
 
     # Headline restatement.
     lines.append("")

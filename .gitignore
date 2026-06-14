@@ -34,3 +34,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# --- Build artifacts / model caches (never commit) ---
+models/
+*.log.gz

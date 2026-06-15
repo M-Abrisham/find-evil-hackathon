@@ -1,0 +1,18 @@
+{
+  "ts": "2026-06-15T00:00:00Z",
+  "host": "siftworkstation",
+  "user": "ubuntu",
+  "claude_version": "1.2.3 (Claude Code)",
+  "artifacts": {
+    "CLAUDE.md": "aaaa000011112222",
+    "settings.json": "bbbb000011112222",
+    "skill:sleuthkit": "cccc000011112222",
+    "skill:plaso-timeline": "dddd000011112222",
+    "skill:memory-analysis": "eeee000011112222"
+  },
+  "env": {
+    "BLIND_MODEL": "(default: opus)",
+    "TUNE_MODEL": "(default: fable)",
+    "ANTHROPIC_API_KEY_set": false
+  }
+}

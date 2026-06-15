@@ -39,3 +39,11 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# --- Runtime score ledger (per-lap KEEP/REVERT record) — commit CODE only ---
+# The hash-chained ledger.jsonl is a runtime artifact (like receipts.jsonl);
+# only the score_ledger.py CODE is committed, never the data.
+ledger.jsonl
+*.ledger.jsonl
+_demo.ledger.jsonl
+_demo_candidate_agg.json

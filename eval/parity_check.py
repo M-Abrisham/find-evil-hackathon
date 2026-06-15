@@ -156,6 +156,11 @@ def main() -> int:
     ap.add_argument("--out", default="parity_manifest.json")
     ap.add_argument("--diff", nargs=2, metavar=("BEFORE", "AFTER"),
                     help="compare two manifests instead of gating")
+    ap.add_argument("--expect", type=int, default=None,
+                    help="(with --diff) require EXACTLY this many changed artifacts "
+                         "for the gate to pass. Default behaviour (omitted) keeps the "
+                         "legacy one-change-per-lap rule: pass iff changed <= 1. Set "
+                         "--expect N only for a DOCUMENTED Stage-4.2 GROUP ablation.")
     args = ap.parse_args()
 
     if args.diff:
@@ -168,9 +173,18 @@ def main() -> int:
             print("\nPARITY BROKEN between runs (host/claude changed) — comparison invalid.",
                   file=sys.stderr)
             return 1
-        print(f"\n{n} artifact(s) changed between runs. One-change-per-lap rule: "
-              f"{'OK' if n <= 1 else 'VIOLATED — attribute the score delta to nothing'}")
-        return 0 if n <= 1 else 1
+        if args.expect is None:
+            ok = n <= 1
+            rule = "one-change-per-lap (changed <= 1)"
+        else:
+            if args.expect < 0:
+                print("\n--expect must be a non-negative integer.", file=sys.stderr)
+                return 1
+            ok = n == args.expect
+            rule = f"group-ablation override (changed == {args.expect})"
+        print(f"\n{n} artifact(s) changed between runs. {rule}: "
+              f"{'OK' if ok else 'VIOLATED — attribute the score delta to nothing'}")
+        return 0 if ok else 1
 
     m = build_manifest()
     hard, warn = gate(m)

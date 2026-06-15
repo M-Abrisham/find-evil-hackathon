@@ -1,0 +1,22 @@
+# .leakscanignore — repo-root whole-file exemptions for scripts/leak_scan.py
+#
+# This file is discovered by `leak_scan.py --staged` (whose scan root is the repo
+# top) and by any `--root .` scan. It exempts ONLY the secret-scanner's own
+# TEST + FIXTURE files, which contain FAKE secrets BY DESIGN (synthetic AWS /
+# RSA / Slack / Braintrust tokens, split-secret reassembly cases, a fake
+# incident report). Self-scanning that corpus would self-flag the intentional
+# fixtures — a bootstrapping false positive, not a real leak.
+#
+# DO NOT add production code or any SUT (protocol-sift/) config here. Production
+# pattern-constant false positives are handled with narrow inline
+# "# leak-scan: allow <check.id>" comments on the specific line instead, so the
+# rest of the file stays fully scanned.
+#
+# Syntax: one glob per line, relative to repo root. '#' starts a comment.
+
+# The scanner's own unit-test suite (asserts on fake secrets it must detect).
+scripts/test_leak_scan.py
+
+# The scanner's red-team corpus: block_* are SUPPOSED to contain fake secrets;
+# ok_* are negative cases. run_redteam.sh drives these as fixtures.
+scripts/redteam/**

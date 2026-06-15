@@ -51,6 +51,17 @@ import subprocess
 import sys
 from typing import Any
 
+# Judge-validation GATE (Diagnosis Protocol tool #2). Best-effort import: score.py
+# must still run fully OFFLINE if eval/diagnosis/ is absent. When present, --judge
+# is refused unless a CURRENT passing judge_validation artifact authorizes it.
+_JUDGE_GATE = None
+_JUDGE_GATE_ENV_VAR = "JUDGE_VALIDATION_ARTIFACT"
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "diagnosis"))
+    from judge_validation import gate_check as _JUDGE_GATE, GATE_ENV_VAR as _JUDGE_GATE_ENV_VAR  # noqa: E402
+except Exception:  # pragma: no cover - tool dir optional
+    _JUDGE_GATE = None
+
 
 # ---------------------------------------------------------------------------
 # The 24 on-box Detection-&-Analysis categories — the parent-category taxonomy.
@@ -727,6 +738,9 @@ def main(argv: list[str] | None = None) -> int:
                     help=f"fuzzy match threshold 0..1 (default {DEFAULT_MATCH_THRESHOLD})")
     ap.add_argument("--judge", action="store_true",
                     help="adjudicate false positives with Claude (subscription CLI; unsets ANTHROPIC_API_KEY)")
+    ap.add_argument("--judge-validation", default=None,
+                    help="path to a CURRENT passing judge_validation.json; REQUIRED to enable --judge "
+                         f"(env {_JUDGE_GATE_ENV_VAR} also honored). Without it --judge is gated OFF.")
     ap.add_argument("--quiet", action="store_true", help="suppress the human scorecard (still writes JSON)")
     ap.add_argument("--selftest", action="store_true", help="run on tiny mock data and exit (no real data, no LLM)")
     args = ap.parse_args(argv)
@@ -738,7 +752,30 @@ def main(argv: list[str] | None = None) -> int:
 
     findings = _load_json(args.findings)
     rubric = _load_json(args.rubric)
-    score = run(findings, rubric, args.threshold, judge=args.judge)
+
+    # JUDGE GATE (Diagnosis Protocol #2): the LLM judge may not move any score
+    # unless a current, passing judge_validation artifact authorizes it. Default
+    # freeze posture is judge OFF; the deterministic hallucination signal stands.
+    judge = args.judge
+    judge_gate_note = None
+    if judge and _JUDGE_GATE is not None:
+        artifact = args.judge_validation or os.environ.get(_JUDGE_GATE_ENV_VAR)
+        allow, reason = _JUDGE_GATE(artifact)
+        if not allow:
+            print(f"[judge-gate] DENIED: {reason} -- running judge OFF (deterministic only).",
+                  file=sys.stderr)
+            judge = False
+            judge_gate_note = reason
+    elif judge and _JUDGE_GATE is None:
+        print("[judge-gate] DENIED: eval/diagnosis/judge_validation.py not importable "
+              "-- running judge OFF (deterministic only).", file=sys.stderr)
+        judge = False
+        judge_gate_note = "judge_validation gate unavailable"
+
+    score = run(findings, rubric, args.threshold, judge=judge)
+    if judge_gate_note is not None:
+        score["judge"] = {"status": "DISABLED_BY_GATE", "note": judge_gate_note,
+                          "human_adjudication_required": True}
 
     if not args.quiet:
         print(render_scorecard(score))

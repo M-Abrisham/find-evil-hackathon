@@ -1,0 +1,26 @@
+{
+  "case_id": "SYNTH-CASE-01",
+  "iocs": [],
+  "total_findable": 2,
+  "found_findable": 1,
+  "findable_recall": 0.5,
+  "total_iocs": 2,
+  "found_total": 2,
+  "full_recall": 0.5,
+  "failures": [
+    {
+      "type": "sha256",
+      "value": "deadbeefdeadbeefdeadbeefdeadbeef"
+    }
+  ],
+  "fabrications": [],
+  "fabrication_count": 0,
+  "asserted_cidrs": [],
+  "verdict_expected": "MALICE",
+  "verdict": "not_emitted",
+  "mitre_present": {
+    "T1059": true
+  },
+  "mitre_found": 1,
+  "mitre_total": 1
+}

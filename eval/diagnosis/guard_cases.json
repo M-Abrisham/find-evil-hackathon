@@ -1,0 +1,73 @@
+{
+  "_comment": [
+    "Guard-case registry for the Rule-Change Diagnosis Protocol (Stage 5.1).",
+    "Maps each SHIPPED rule -> the guard case that demonstrates the value the rule protects,",
+    "plus the exact PASS SIGNAL on that case (a frozen, auditable binary check over the REAL",
+    "scorer output shapes: scorer.py CaseResult.to_dict() / score.py build_score() / presence_scorer.py to_dict()).",
+    "status=PENDING means the guard case has NOT been built/scored yet — it is NEVER invented, never",
+    "counted PASS/FAIL. When the matching real guard case is built on josh-pc, flip status to AVAILABLE",
+    "and drop the per-round score JSONs as <case_id>_<arm>_round-N.<source>.json into the score dir.",
+    "signal.check is one of regression_suite.SIGNAL_CHECKS; signal.source selects which scorer JSON is read.",
+    "Rule IDs are the spec/branch shorthand (feat/prompt-rules-g31-g20-g25-r3-r5 + G28); the concrete",
+    "clause text each protects is in protocol-sift/contract/contract.yaml + protocol-sift/global/CLAUDE.md."
+  ],
+  "version": 1,
+  "guard_cases": [
+    {
+      "rule_id": "G31",
+      "rule_summary": "Quote before you claim: no IOC/literal may enter the report without a verbatim cited tool receipt (anti-fabrication).",
+      "case_id": "guard-g31-fabrication",
+      "status": "PENDING",
+      "signal": {"check": "no_fabrication", "source": "scorer"},
+      "note": "Guard = a case where the tempting fabrication is easy; PASS iff scorer.py fabrication_count==0. Cross-checked judge-free via score.py hallucination.unbacked_list (see G31b)."
+    },
+    {
+      "rule_id": "G31b",
+      "rule_summary": "Quote before you claim (blind/findings.json side): every finding must carry literal_cited (anti-hallucination).",
+      "case_id": "guard-g31-hallucination",
+      "status": "PENDING",
+      "signal": {"check": "no_hallucination", "source": "score"},
+      "note": "Same rule, blind path. PASS iff score.py hallucination.unbacked_list is empty (deterministic, judge-free)."
+    },
+    {
+      "rule_id": "G20",
+      "rule_summary": "Dual-use tools PRESUMED LEGITIMATE; do NOT assert MALICE on a tool name / single anomaly alone (anti-false-positive verdict).",
+      "case_id": "guard-g20-malicious-looking-benign",
+      "status": "PENDING",
+      "signal": {"check": "verdict_class", "source": "scorer", "args": ["non_malicious"]},
+      "note": "Adversarial malicious-LOOKING-benign case (e.g. PsExec/certutil present, all legitimate). PASS iff scorer.py verdict=='found' against an expected NON_MALICE key; removing G20 must not flip it to a false MALICE."
+    },
+    {
+      "rule_id": "G25",
+      "rule_summary": "NON_MALICE requires POSITIVE benign corroboration; absence of malice / clean output is INCONCLUSIVE, never NON_MALICE (anti-over-clean).",
+      "case_id": "guard-g25-absence-not-innocence",
+      "status": "PENDING",
+      "signal": {"check": "verdict_class", "source": "scorer", "args": ["inconclusive"]},
+      "note": "Case with no positive benign signal and no malice. PASS iff scorer.py verdict=='found' against an expected INCONCLUSIVE key; removing G25 must not over-call NON_MALICE."
+    },
+    {
+      "rule_id": "R3",
+      "rule_summary": "IOC literals copied byte-for-byte; never normalize/reformat/complete/guess a value (anti-mangled/invented IOC).",
+      "case_id": "guard-r3-ioc-fidelity",
+      "status": "PENDING",
+      "signal": {"check": "no_fabrication", "source": "scorer"},
+      "note": "Case with an IOC whose mis-normalization would read as a fabrication. PASS iff scorer.py fabrication_count==0 (a reformatted/guessed value surfaces in fabrications[]). Pair with an ioc_not_in_failures recall check on the same case once it exists."
+    },
+    {
+      "rule_id": "R5",
+      "rule_summary": "Skeptic pass before COMPLETE: emit a finding-level INSUFFICIENT_EVIDENCE token AND a '## Limitations & Coverage Gaps' section.",
+      "case_id": "guard-r5-presence",
+      "status": "PENDING",
+      "signal": {"check": "presence_passed", "source": "presence"},
+      "note": "PASS iff presence_scorer.py passed==True. This is the only rule with a dedicated binary scorer today; its synthetic fixture exercises the full AVAILABLE path."
+    },
+    {
+      "rule_id": "G28",
+      "rule_summary": "Identity before labeling: resolve a binary/service/account identity (path/sig/hash/baseline) BEFORE applying any malice label.",
+      "case_id": "guard-g28-identity-before-label",
+      "status": "PENDING",
+      "signal": {"check": "verdict_class", "source": "scorer", "args": ["non_malicious"]},
+      "note": "Companion to G20. Case where a name LOOKS malicious but identity resolution proves it legitimate. PASS iff scorer.py verdict=='found' against the expected NON_MALICE key."
+    }
+  ]
+}

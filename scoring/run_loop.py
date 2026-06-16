@@ -92,7 +92,65 @@ _CANDIDATE_NOTE = ("NOTE: a KEEP is a PER-LAP CANDIDATE (unconfirmed). Route it 
                    "a REVERT may be acted on per-lap.")
 
 
+def _blame_main(argv: Optional[list] = None) -> int:
+    """ADDITIVE `run_loop.py --blame ...` branch (roadmap 8.7 wiring).
+
+    Parses the FIXTURE score/playbook paths and delegates to
+    blame_router.diagnose_and_route, which subprocesses the frozen blamer + tuner and
+    reuses keep_or_revert + score_ledger. No live agent run (every score is a fixture).
+    """
+    import blame_router  # lazy import: only the --blame path pays for it
+    bp = argparse.ArgumentParser(
+        prog="run_loop.py --blame",
+        description="diagnose (blamer) -> route -> guarded tune -> keep/revert -> ledger, "
+                    "over FIXTURE scores (no live run).")
+    bp.add_argument("--baseline-eval-score", required=True,
+                    help="eval/score.py JSON (missed_evidence buckets)")
+    bp.add_argument("--baseline-ioc-score", default=None,
+                    help="scoring/scorer.py CLI JSON ({cases,aggregate}) — baseline 'before' vector")
+    bp.add_argument("--post-ioc-score", required=True,
+                    help="scoring/scorer.py CLI JSON — candidate 'after' vector (fixture; no re-run)")
+    bp.add_argument("--playbook", required=True, help="contract-shaped playbook .md to blame + tune")
+    bp.add_argument("--case-id", required=True)
+    bp.add_argument("--ledger", required=True)
+    bp.add_argument("--versions-dir", default=None,
+                    help="override <playbook_dir>/versions for the snapshot revert")
+    bp.add_argument("--repo-root", default=None,
+                    help="cwd for the blamer/tuner subprocesses (default: this repo root)")
+    bp.add_argument("--lap", type=int, default=1)
+    bp.add_argument("--blame-out", default=None, help="where to keep blame.json (default: temp)")
+    bp.add_argument("--eps-recall", type=float, default=0.0)
+    a = bp.parse_args(argv)
+    if a.eps_recall < 0:
+        print("error: --eps-recall must be >= 0", file=sys.stderr)
+        return 2
+
+    repo_root = a.repo_root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out = blame_router.diagnose_and_route(
+        baseline_eval_score=a.baseline_eval_score,
+        baseline_ioc_score=a.baseline_ioc_score,
+        post_ioc_score=a.post_ioc_score,
+        playbook_path=a.playbook,
+        case_id=a.case_id,
+        ledger_path=a.ledger,
+        versions_dir=a.versions_dir,
+        repo_root=repo_root,
+        lap=a.lap,
+        blame_out=a.blame_out,
+        eps_recall=a.eps_recall,
+    )
+    print(json.dumps(out, indent=2))
+    print(_CANDIDATE_NOTE, file=sys.stderr)
+    # exit 0 unless an actionable tune was REVERTED (a rejected candidate is a non-zero signal).
+    return 1 if out.get("decision") == "REVERT" else 0
+
+
 def main(argv: Optional[list] = None) -> int:
+    # ADDITIVE: a "--blame" first-arg routes to the blamer-wired diagnose->route->
+    # keep/revert->ledger lap (blame_router). Everything below is unchanged.
+    _av = sys.argv[1:] if argv is None else list(argv)
+    if _av and _av[0] == "--blame":
+        return _blame_main(_av[1:])
     p = argparse.ArgumentParser(
         description="MVP scripted single-lap orchestrator: score baseline+candidate report -> "
                     "decide (candidate) -> record one hash-chained ledger row -> verify.")

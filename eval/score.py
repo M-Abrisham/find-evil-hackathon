@@ -113,6 +113,29 @@ JUDGE_MODEL = os.environ.get("SCORE_MODEL", "sonnet")
 JUDGE_ARGS = shlex.split(os.environ.get("SCORE_AGENT_ARGS", ""))
 
 
+def judge_model_version() -> str | None:
+    """Capture the running judge CLI's version string (`claude --version`), keyed
+    by the configured model, so the judge-validation gate can enforce that an
+    authorizing artifact was produced under the SAME model snapshot it now runs.
+
+    Returns a "<model>@<cli-version>" tag, or None if the CLI is unavailable. A
+    None here is treated as a STALE/UNKNOWN snapshot by the gate (fail-closed):
+    if the artifact recorded a version we cannot match an unknown to, the gate
+    denies — we never silently pass an unverifiable snapshot."""
+    try:
+        r = subprocess.run([JUDGE_AGENT, "--version"],
+                           capture_output=True, text=True, timeout=30)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if r.returncode != 0:
+        return None
+    ver = (r.stdout or "").strip().splitlines()
+    ver = ver[0].strip() if ver else ""
+    if not ver:
+        return None
+    return f"{JUDGE_MODEL}@{ver}"
+
+
 # ---------------------------------------------------------------------------
 # Text normalization + fuzzy / token-set matching (difflib only).
 # ---------------------------------------------------------------------------
@@ -760,7 +783,13 @@ def main(argv: list[str] | None = None) -> int:
     judge_gate_note = None
     if judge and _JUDGE_GATE is not None:
         artifact = args.judge_validation or os.environ.get(_JUDGE_GATE_ENV_VAR)
-        allow, reason = _JUDGE_GATE(artifact)
+        # Capture the CURRENT judge model snapshot and hand it to the gate so the
+        # artifact's model-snapshot / version-drift check actually fires at SCORE
+        # time: a passing artifact stamped under a different (stale) snapshot is
+        # DENIED. (gate_check is fail-closed: a None version still requires the
+        # artifact to be a genuine boolean-True pass.)
+        running_version = judge_model_version()
+        allow, reason = _JUDGE_GATE(artifact, running_version)
         if not allow:
             print(f"[judge-gate] DENIED: {reason} -- running judge OFF (deterministic only).",
                   file=sys.stderr)

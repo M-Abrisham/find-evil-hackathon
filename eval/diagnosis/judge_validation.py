@@ -351,14 +351,22 @@ def artifact_is_current(artifact: dict, claude_version: Optional[str] = None) ->
     """Decide whether a validation artifact authorizes the judge RIGHT NOW.
     Returns (ok: bool, reason: str). 'Current' = passed AND (if a
     claude_version is supplied AND the artifact recorded one) versions match,
-    because the judge is tied to one model snapshot (protocol 5.4)."""
+    because the judge is tied to one model snapshot (protocol 5.4).
+
+    FAIL-CLOSED. `passed` must be the JSON boolean ``true`` (identity check): a
+    truthy-but-non-bool value (1, "yes", [1], ...) is REJECTED, never read as a
+    pass — a corrupt/hand-edited artifact must not silently authorize the judge."""
     if not isinstance(artifact, dict):
         return (False, "validation artifact is not a JSON object")
     if artifact.get("tool") != "judge_validation":
         return (False, "artifact is not a judge_validation result")
-    if not artifact.get("passed"):
-        rs = "; ".join(artifact.get("fail_reasons") or []) or "did not pass"
-        return (False, f"validation FAILED ({rs})")
+    passed = artifact.get("passed")
+    if passed is not True:  # identity: reject 1 / "yes" / [1] / truthy-non-bool
+        if passed is False or passed is None or "passed" not in artifact:
+            rs = "; ".join(artifact.get("fail_reasons") or []) or "did not pass"
+            return (False, f"validation FAILED ({rs})")
+        return (False, f"artifact 'passed' is not boolean true "
+                       f"(got {type(passed).__name__} {passed!r}) — refusing (fail-closed)")
     art_ver = artifact.get("claude_version")
     if claude_version and art_ver and art_ver != claude_version:
         return (False, f"version drift: artifact={art_ver} now={claude_version} (re-validate)")

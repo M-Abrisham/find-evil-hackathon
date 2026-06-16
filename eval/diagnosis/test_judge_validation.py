@@ -237,6 +237,159 @@ class TestFailure(unittest.TestCase):
             self.assertFalse(ok)
 
 
+class TestGateHardening(unittest.TestCase):
+    """FIX 2: the judge gate is fail-closed.
+      (a) the running model snapshot drives the version-drift check at score time:
+          a passing artifact stamped under a STALE snapshot is DENIED;
+      (b) `passed` must be the JSON boolean true (identity) — a truthy-but-non-bool
+          value (1 / "yes" / [1]) is REJECTED, never read as a pass."""
+
+    # ---- (b) passed must be boolean True, not merely truthy -----------------
+    def test_passed_truthy_int_one_is_denied(self):
+        ok, reason = jv.artifact_is_current({"tool": "judge_validation", "passed": 1})
+        self.assertFalse(ok)
+        self.assertIn("not boolean true", reason)
+
+    def test_passed_string_yes_is_denied(self):
+        ok, reason = jv.artifact_is_current({"tool": "judge_validation", "passed": "yes"})
+        self.assertFalse(ok)
+        self.assertIn("not boolean true", reason)
+
+    def test_passed_nonempty_list_is_denied(self):
+        ok, reason = jv.artifact_is_current({"tool": "judge_validation", "passed": [1]})
+        self.assertFalse(ok)
+        self.assertIn("not boolean true", reason)
+
+    def test_passed_false_is_denied_as_failure(self):
+        ok, reason = jv.artifact_is_current(
+            {"tool": "judge_validation", "passed": False, "fail_reasons": ["TPR 0.5 < 0.9"]})
+        self.assertFalse(ok)
+        self.assertIn("FAILED", reason)
+
+    def test_passed_missing_is_denied(self):
+        ok, reason = jv.artifact_is_current({"tool": "judge_validation"})
+        self.assertFalse(ok)
+        self.assertIn("FAILED", reason)
+
+    def test_genuine_boolean_true_no_version_is_allowed(self):
+        ok, reason = jv.artifact_is_current({"tool": "judge_validation", "passed": True})
+        self.assertTrue(ok)
+
+    # ---- (a) version-drift check fires at score time ------------------------
+    def test_stale_version_passing_artifact_is_denied(self):
+        art = {"tool": "judge_validation", "passed": True, "claude_version": "sonnet@1.0.0"}
+        ok, reason = jv.artifact_is_current(art, claude_version="sonnet@2.0.0")
+        self.assertFalse(ok)
+        self.assertIn("drift", reason)
+
+    def test_current_version_passing_artifact_is_allowed(self):
+        art = {"tool": "judge_validation", "passed": True, "claude_version": "sonnet@2.0.0"}
+        ok, reason = jv.artifact_is_current(art, claude_version="sonnet@2.0.0")
+        self.assertTrue(ok)
+
+    def test_gate_check_stale_version_via_file_is_denied(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = os.path.join(d, "stale.json")
+            with open(f, "w") as fh:
+                json.dump({"tool": "judge_validation", "passed": True,
+                           "claude_version": "sonnet@OLD"}, fh)
+            ok, reason = jv.gate_check(f, claude_version="sonnet@NEW")
+            self.assertFalse(ok)
+            self.assertIn("drift", reason)
+            # same snapshot -> allowed
+            ok2, _ = jv.gate_check(f, claude_version="sonnet@OLD")
+            self.assertTrue(ok2)
+
+
+class TestScoreJudgeGate(unittest.TestCase):
+    """FIX 2: score.py captures `claude --version` and passes it to the gate, so a
+    stale-snapshot passing artifact is DENIED end-to-end at score time, and the
+    judge runs OFF (deterministic only). Uses a stubbed agent CLI on a tmp PATH —
+    NO network, NO API key, NO real model call."""
+
+    def _load_score_module(self):
+        import importlib.util
+        here = os.path.dirname(os.path.abspath(jv.__file__))
+        src = os.path.abspath(os.path.join(here, "..", "score.py"))
+        spec = importlib.util.spec_from_file_location("_score_for_gate_test", src)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _write_stub_agent(self, d, version_line):
+        import stat
+        agent = os.path.join(d, "claude")
+        with open(agent, "w") as fh:
+            fh.write("#!/usr/bin/env bash\n")
+            # `--version` -> print the stamped version; any other call -> empty json
+            fh.write('if [ "$1" = "--version" ]; then echo "%s"; exit 0; fi\n' % version_line)
+            fh.write('echo "{}"; exit 0\n')
+        os.chmod(agent, os.stat(agent).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        return agent
+
+    def test_judge_model_version_reads_stub_cli(self):
+        score = self._load_score_module()
+        with tempfile.TemporaryDirectory() as d:
+            self._write_stub_agent(d, "9.9.9 (Claude Code)")
+            env_path = os.environ.get("PATH", "")
+            old_agent = score.JUDGE_AGENT
+            try:
+                score.JUDGE_AGENT = os.path.join(d, "claude")
+                ver = score.judge_model_version()
+            finally:
+                score.JUDGE_AGENT = old_agent
+            self.assertIsNotNone(ver)
+            self.assertIn("9.9.9", ver)
+            self.assertTrue(ver.startswith(score.JUDGE_MODEL + "@"))
+
+    def test_judge_model_version_none_when_cli_absent(self):
+        score = self._load_score_module()
+        old_agent = score.JUDGE_AGENT
+        try:
+            score.JUDGE_AGENT = "/nonexistent/definitely-not-a-real-agent-binary"
+            self.assertIsNone(score.judge_model_version())
+        finally:
+            score.JUDGE_AGENT = old_agent
+
+    def test_main_denies_stale_snapshot_and_runs_judge_off(self):
+        score = self._load_score_module()
+        with tempfile.TemporaryDirectory() as d:
+            # 1. stub agent reporting the CURRENT snapshot version
+            self._write_stub_agent(d, "2.0.0")
+            score.JUDGE_AGENT = os.path.join(d, "claude")
+            running = score.judge_model_version()  # "<model>@2.0.0"
+            self.assertTrue(running.endswith("@2.0.0"))
+
+            # 2. a PASSING artifact, but stamped under a STALE snapshot
+            art = os.path.join(d, "judge_validation.json")
+            with open(art, "w") as fh:
+                json.dump({"tool": "judge_validation", "passed": True,
+                           "claude_version": running.rsplit("@", 1)[0] + "@1.0.0"}, fh)
+
+            # 3. minimal valid findings + rubric (reuse the selftest mock via score.run)
+            findings = {"schema_version": "1.0", "case_id": "c",
+                        "attack_type_classification": {"category": "Network Forensics",
+                                                       "confidence": "confirmed"},
+                        "findings": []}
+            rubric = {"schema_version": "1.0", "case_id": "c",
+                      "attack_type": {"category": "Network Forensics"},
+                      "key_artifacts": [], "key_iocs": [], "timeline_events": [],
+                      "actor_accounts": [], "exfil_or_encryption_facts": []}
+            fp = os.path.join(d, "findings.json"); rp = os.path.join(d, "rubric.json")
+            op = os.path.join(d, "score.json")
+            with open(fp, "w") as fh: json.dump(findings, fh)
+            with open(rp, "w") as fh: json.dump(rubric, fh)
+
+            rc = score.main(["-f", fp, "-r", rp, "-o", op,
+                             "--judge", "--judge-validation", art, "--quiet"])
+            self.assertEqual(rc, 0)
+            out = json.load(open(op))
+            # gate must have DENIED the stale artifact -> judge disabled by gate
+            self.assertIn("judge", out)
+            self.assertEqual(out["judge"]["status"], "DISABLED_BY_GATE")
+            self.assertIn("drift", out["judge"]["note"])
+
+
 # ---------------------------------------------------------------------------
 # USE-CASE — realistic end-to-end operator scenario
 # ---------------------------------------------------------------------------

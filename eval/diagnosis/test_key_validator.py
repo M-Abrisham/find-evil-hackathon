@@ -280,6 +280,83 @@ class TestCrossArmKeyDoubt(unittest.TestCase):
         self.assertEqual(res["agreed_answer"], "NON_MALICE")
 
 
+class TestKeyDoubtPositiveContradiction(unittest.TestCase):
+    """FIX 3: a scorer-shape round must show an ACTUAL positive contradiction to
+    count against the key. Both arms merely FAILING TO EMIT a verdict (no wrong-class
+    token, no asserted-contrary IOC, zero fabrications) is NOT a contradiction, so a
+    good key must NOT be flagged with KEY-DOUBT."""
+
+    def _no_verdict_round(self):
+        # The report emitted NO VERDICT: line at all -> scorer collapses this to
+        # verdict=='not_emitted', reported_verdict is absent, nothing fabricated,
+        # no asserted-contrary IOC. Pure failure-to-emit.
+        return {"verdict": "not_emitted", "verdict_expected": "MALICE",
+                "fabrication_count": 0}
+
+    def test_both_arms_no_verdict_no_contradiction_does_NOT_fire(self):
+        # 3/3 rounds per arm, both arms silent on the verdict, zero fabrications.
+        sift = [self._no_verdict_round()] * 3
+        bare = [self._no_verdict_round()] * 3
+        res = kv.cross_arm_key_doubt(sift, bare)
+        self.assertEqual(res["verdict"], "AGENT_SIDE")
+        self.assertFalse(res["escalate_human_readjudication"],
+                         "failure-to-emit must not be read as contradicting the key")
+        self.assertEqual(res["sift"]["n_qualifying"], 0)
+        self.assertEqual(res["bare"]["n_qualifying"], 0)
+
+    def test_empty_string_reported_verdict_is_failure_to_emit(self):
+        # reported_verdict present but blank -> still no positive contradiction.
+        r = {"verdict": "not_emitted", "verdict_expected": "MALICE",
+             "fabrication_count": 0, "reported_verdict": "   "}
+        res = kv.cross_arm_key_doubt([r] * 3, [r] * 3)
+        self.assertFalse(res["escalate_human_readjudication"])
+
+    def test_unclassifiable_reported_verdict_is_not_a_contradiction(self):
+        # A token the scorer cannot classify as a verdict -> no contrary class.
+        r = {"verdict": "not_emitted", "verdict_expected": "MALICE",
+             "fabrication_count": 0, "reported_verdict": "GIBBERISH_TOKEN"}
+        res = kv.cross_arm_key_doubt([r] * 3, [r] * 3)
+        self.assertFalse(res["escalate_human_readjudication"])
+
+    def test_both_arms_actively_contradict_wrong_class_verdict_fires(self):
+        # The report ACTUALLY emitted NON_MALICE while the key expects MALICE:
+        # a present, classifiable, different-class verdict -> positive contradiction.
+        r = {"verdict": "not_emitted", "verdict_expected": "MALICE",
+             "fabrication_count": 0, "reported_verdict": "NON_MALICE"}
+        res = kv.cross_arm_key_doubt([r] * 3, [r] * 3)
+        self.assertEqual(res["verdict"], "KEY_DOUBT")
+        self.assertTrue(res["escalate_human_readjudication"])
+        self.assertEqual(res["agreed_answer"], "NON_MALICE")
+
+    def test_asserted_contrary_ioc_fires_even_without_wrong_class_verdict(self):
+        # No emitted verdict token, but the report ASSERTED a CIDR that covers none
+        # of the input hosts -> a positive contrary IOC assertion -> contradiction.
+        r = {"verdict": "not_emitted", "verdict_expected": "MALICE",
+             "fabrication_count": 0,
+             "asserted_cidrs": [{"value": "203.0.113.0/24", "covers_input_hosts": False}]}
+        res = kv.cross_arm_key_doubt([r] * 3, [r] * 3)
+        self.assertEqual(res["verdict"], "KEY_DOUBT")
+        self.assertTrue(res["escalate_human_readjudication"])
+
+    def test_asserted_cidr_that_covers_input_is_not_contrary(self):
+        # An asserted CIDR that DOES cover an input host is not a contrary assertion.
+        r = {"verdict": "not_emitted", "verdict_expected": "MALICE",
+             "fabrication_count": 0,
+             "asserted_cidrs": [{"value": "10.0.0.0/8", "covers_input_hosts": True}]}
+        res = kv.cross_arm_key_doubt([r] * 3, [r] * 3)
+        self.assertFalse(res["escalate_human_readjudication"])
+
+    def test_one_arm_silent_one_arm_contradicts_does_NOT_fire(self):
+        # Only one arm actively contradicts; the other is silent -> not both-arm,
+        # so no KEY-DOUBT (this is the over-flag the fix prevents at the margin).
+        contradict = {"verdict": "not_emitted", "verdict_expected": "MALICE",
+                      "fabrication_count": 0, "reported_verdict": "NON_MALICE"}
+        silent = {"verdict": "not_emitted", "verdict_expected": "MALICE",
+                  "fabrication_count": 0}
+        res = kv.cross_arm_key_doubt([contradict] * 3, [silent] * 3)
+        self.assertFalse(res["escalate_human_readjudication"])
+
+
 # ---------------------------------------------------------------------------
 # USE-CASE: a realistic end-to-end operator scenario.
 # ---------------------------------------------------------------------------

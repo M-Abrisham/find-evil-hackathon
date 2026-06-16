@@ -372,12 +372,18 @@ def validate_key_from_files(
 #           hallucination.hallucination_rate <= HALLUC_MAX
 #       AND it is confident: predicted_confidence != "insufficient_evidence"
 #     -> its "answer" for consistency = predicted_category_canonical.
-#   * IOC (scorer.py) round: verdict == "not_emitted" relative to verdict_expected
-#       (i.e. the report's verdict CONTRADICTS the key's class) — note scorer
-#       collapses missing AND wrong-class to "not_emitted", so a clean reading needs
-#       the report's parsed token; we use the wrong-class signal conservatively and
-#       additionally require fabrication_count == 0 (backed) — and the answer for
-#       consistency = the round's reported verdict token if present, else "not_emitted".
+#   * IOC (scorer.py) round: an ACTUAL positive contradiction — NOT a bare
+#       failure-to-emit. scorer collapses missing AND present-but-wrong-class into
+#       verdict == "not_emitted", so verdict alone cannot tell silence apart from a
+#       wrong answer. A round counts as contradicting the key ONLY when, on top of
+#       verdict == "not_emitted", there is a positive contrary assertion: either
+#       the report EMITTED a VERDICT: token in a different class than verdict_expected
+#       (reported_verdict present + classifiable + different class), OR it asserted a
+#       contrary IOC (an asserted CIDR covering none of the input hosts). Both arms
+#       merely producing no verdict (fabrication_count == 0, no asserted-contrary IOC)
+#       is NOT a contradiction -> no KEY-DOUBT (a good key must not be over-flagged).
+#       Backing still additionally requires fabrication_count == 0; the answer for
+#       consistency = the round's reported verdict token if present, else a marker.
 #
 # KEY-DOUBT fires only when BOTH arms have >=1 such backed-contradicting round AND
 # the arms AGREE on the same wrong answer across the rounds that contradict (their
@@ -403,11 +409,59 @@ def _blind_round_signal(score: dict) -> dict | None:
             "confident": confident, "answer": answer}
 
 
+def _asserted_contrary_ioc(score: dict) -> bool:
+    """True iff the round positively ASSERTED an IOC-shaped claim that the input
+    does not support (an asserted CIDR that covers none of the input hosts). This
+    is a POSITIVE contrary signal (the report made a wrong claim), distinct from
+    merely failing to emit anything."""
+    for c in score.get("asserted_cidrs", []) or []:
+        if isinstance(c, dict) and not c.get("covers_input_hosts", False):
+            return True
+    return False
+
+
+def _reported_verdict_actively_contradicts(score: dict) -> bool:
+    """True iff the report ACTUALLY emitted a VERDICT: token whose semantic class
+    differs from the key's expected class. This is the backed, positive
+    wrong-class contradiction (NOT a bare failure-to-emit).
+
+    scorer collapses BOTH 'no verdict line at all' AND 'present-but-wrong-class'
+    into verdict=='not_emitted', so verdict alone cannot tell the two apart. We
+    use the round's recorded reported_verdict token: present + classifiable +
+    in a DIFFERENT class than expected == an actual contradiction. Absent / empty
+    / unclassifiable reported_verdict == the report simply did not assert a
+    contrary verdict == NOT a contradiction."""
+    rv = score.get("reported_verdict")
+    if not isinstance(rv, str) or not rv.strip():
+        return False
+    rv_class = scorer._verdict_class(rv)
+    if rv_class is None:
+        return False  # emitted token isn't a recognized verdict -> no contrary class
+    exp_class = scorer._verdict_class(score.get("verdict_expected", "") or "")
+    if exp_class is None:
+        return False  # key has no classifiable expected verdict -> nothing to contradict
+    return rv_class != exp_class
+
+
 def _ioc_round_signal(score: dict) -> dict | None:
-    """Extract the same tuple from a scorer.py CaseResult round dict."""
+    """Extract the (contradicts, backed, confident, answer) tuple from a scorer.py
+    CaseResult round dict.
+
+    A round CONTRADICTS the key only on an ACTUAL positive contradiction signal:
+    the report emitted a wrong-class VERDICT, OR it asserted a contrary IOC. A
+    round where scorer.verdict=='not_emitted' merely because the report produced
+    NO verdict line (no positive contrary assertion, no asserted-contrary IOC) is
+    a FAILURE TO EMIT, not a contradiction of the key — so it must NOT count, or a
+    good key gets over-flagged when both arms simply stay silent."""
     if "verdict" not in score or "verdict_expected" not in score:
         return None
-    contradicts = score.get("verdict") == "not_emitted"  # missing OR wrong-class
+    wrong_class = score.get("verdict") == "not_emitted"  # missing OR wrong-class
+    # Require a POSITIVE contradiction, not a bare failure-to-emit:
+    positive_contradiction = (
+        _reported_verdict_actively_contradicts(score)
+        or _asserted_contrary_ioc(score)
+    )
+    contradicts = wrong_class and positive_contradiction
     backed = int(score.get("fabrication_count", 1)) == 0
     # scorer rounds carry no per-finding confidence; treat a present verdict as confident.
     confident = True

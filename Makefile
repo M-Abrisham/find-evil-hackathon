@@ -11,6 +11,9 @@ eval:
 test:
 	cd scoring && python3 -m unittest discover -v
 	cd scoring && python3 -m unittest test_score_ledger -v
+	cd scoring && python3 -m unittest test_composite -v
+	cd scoring && python3 -m unittest test_keep_or_revert -v
+	cd scoring && python3 -m unittest test_hedge_immutability -v
 	cd trace_enrich && python3 -m unittest discover -v
 
 manifests:

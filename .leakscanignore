@@ -1,0 +1,62 @@
+# .leakscanignore — repo-root whole-file exemptions for scripts/leak_scan.py
+#
+# This file is discovered by `leak_scan.py --staged` (whose scan root is the repo
+# top) and by any `--root .` scan. It exempts ONLY the secret-scanner's own
+# TEST + FIXTURE files, which contain FAKE secrets BY DESIGN (synthetic AWS /
+# RSA / Slack / Braintrust tokens, split-secret reassembly cases, a fake
+# incident report). Self-scanning that corpus would self-flag the intentional
+# fixtures — a bootstrapping false positive, not a real leak.
+# DO NOT add production code or any SUT (protocol-sift/) config here. Production
+# pattern-constant false positives are handled with narrow inline
+# "# leak-scan: allow <check.id>" comments on the specific line instead, so the
+# rest of the file stays fully scanned.
+# Syntax: one glob per line, relative to repo root. '#' starts a comment.
+
+# The scanner's own unit-test suite (asserts on fake secrets it must detect).
+scripts/test_leak_scan.py
+# The scanner's red-team corpus: block_* are SUPPOSED to contain fake secrets;
+# ok_* are negative cases. run_redteam.sh drives these as fixtures.
+scripts/redteam/**
+# The drift-check unit test embeds SYNTHETIC verdict-vocabulary tokens
+# (MALICE / NON_MALICE / INCONCLUSIVE / SUSPICIOUS) and fake YAML by design;
+# the scanner mis-reads those test strings as secret assignments. It is a
+# TEST file (like scripts/test_leak_scan.py), so whole-file exempt it.
+eval/diagnosis/test_contract_scorer_drift.py
+# Diagnosis Protocol synthetic test fixtures (eval/diagnosis/): synthetic
+# round-score JSONs, fake labeled judge sets, and synthetic IOC values BY
+# DESIGN. They carry no real secrets/keys/ground-truth. Mirrors the existing
+# scripts/redteam/** + test_leak_scan.py fixture exemptions.
+eval/diagnosis/fixtures/**
+
+# ---------------------------------------------------------------------------
+# Confirmed FALSE POSITIVES — manually reviewed 2026-06-15 for the public
+# submission. Each entry is SCOPED to a single check (glob::check_id) so the
+# file stays fully scanned for every OTHER check. None contain a real secret
+# or a real case-answer value (each flagged line was eyeballed).
+# ---------------------------------------------------------------------------
+# Braintrust REST client: "api_key" is a parameter / keyword-arg NAME; the real
+# key is read from $BT_API_KEY at runtime (get_api_key(): "NEVER hardcode it").
+trace_enrich/bt_client.py::secret.assignment
+trace_enrich/enrich.py::secret.assignment
+# trace_enrich notes: an example Claude tool_use_id ("toolu_01AR...") — not a secret.
+trace_enrich/NOTES.md::secret.entropy
+# Cloud-IaaS DFIR playbook documents AWS CloudTrail eventNames
+# (ModifySnapshotAttribute / ModifyImageAttribute / ...): API names, not secrets.
+playbooks/cloud-iaas-control-plane.md::secret.entropy
+# Network-forensics playbook: an ngrep pattern that hunts cleartext creds in pcaps.
+playbooks/network-forensics.md::secret.assignment
+# Blame playbook docstring mentions the word "verdict".
+playbooks/blame_playbook.py::secret.deobfuscated
+# Scorer code + README reference the scoring INPUT schema name "ground_truth.json"
+# and a "token = parse_report_verdict(...)" assignment — no answer VALUES.
+scoring/scorer.py::answer_leak.literal,secret.assignment
+scoring/README.md::answer_leak.literal
+# Files ABOUT answer keys (path self-match; contain NO answer values): the A8
+# scorer that checks the agent never reads answer keys, and the denylist of
+# filename PATTERNS to exclude from agent reads.
+scorers/a8_no_answer_key.py::forbidden_path.answer_key
+dataset/answer_key_denylist.txt::forbidden_path.answer_key
+
+# The scanner config itself: comments cite example trigger strings
+# (AWS eventNames, "ground_truth.json", var names). It holds only globs+comments.
+.leakscanignore

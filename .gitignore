@@ -7,6 +7,8 @@
 *secret*
 .aws/
 .config/gh/
+settings.local.json
+**/.claude/settings.local.json
 
 # --- Forensic evidence / case data (never commit raw evidence) ---
 evidence/
@@ -28,9 +30,20 @@ __pycache__/
 venv/
 *.egg-info/
 
+# --- Tool output ---
+runs/
+
 # --- OS / editor cruft ---
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# --- Runtime score ledger (per-lap KEEP/REVERT record) — commit CODE only ---
+# The hash-chained ledger.jsonl is a runtime artifact (like receipts.jsonl);
+# only the score_ledger.py CODE is committed, never the data.
+ledger.jsonl
+*.ledger.jsonl
+_demo.ledger.jsonl
+_demo_candidate_agg.json

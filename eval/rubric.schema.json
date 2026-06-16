@@ -1,0 +1,223 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://protocol-sift.local/eval/rubric.schema.json",
+  "title": "Protocol SIFT — Hidden Ground-Truth Rubric",
+  "description": "BUILD-TIME EVAL TOOLING — not part of any hackathon submission. The operator-built answer key for ONE already-solved case, extracted from its published answer key (e.g. CFReDS leakage-answers.pdf). Kept HIDDEN from the investigator — run_blind.py never reads it into the prompt. A scorer compares a blind findings.json against this rubric to compute attack-type match, key-evidence recall, false-positive rate, and hallucination rate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attack_type",
+    "key_artifacts",
+    "key_iocs",
+    "timeline_events",
+    "actor_accounts",
+    "exfil_or_encryption_facts"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Version of this rubric schema.",
+      "const": "1.0"
+    },
+    "case_id": {
+      "type": "string",
+      "description": "Identifier of the case this rubric answers (matches the case_id used by run_blind.py)."
+    },
+    "source": {
+      "type": "string",
+      "description": "Provenance of the answer key (dataset name + URL/file the operator extracted it from). Not scored; for audit."
+    },
+    "attack_type": {
+      "type": "object",
+      "description": "Ground-truth classification. category is the single correct on-box SIFT category the investigator should land on; aliases capture acceptable free-form phrasings of the incident.",
+      "additionalProperties": false,
+      "required": [
+        "category"
+      ],
+      "properties": {
+        "category": {
+          "description": "The correct primary category, verbatim from the 24-category on-box SIFT taxonomy.",
+          "$ref": "#/$defs/sift_category"
+        },
+        "secondary_categories": {
+          "type": "array",
+          "description": "Other categories that legitimately apply to this multi-stage incident (partial credit if the investigator names one).",
+          "items": {
+            "$ref": "#/$defs/sift_category"
+          },
+          "uniqueItems": true
+        },
+        "aliases": {
+          "type": "array",
+          "description": "Acceptable plain-language descriptions of the incident (e.g. 'insider data theft / IP exfiltration via USB'). Used for fuzzy attack-type match.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "key_artifacts": {
+      "type": "array",
+      "description": "Must-find artifacts / files / registry keys that the investigation should surface (e.g. 'setupapi.dev.log USB install record', 'NTUSER.DAT UserAssist', '$MFT entry for stolen-doc.docx').",
+      "items": {
+        "$ref": "#/$defs/rubric_item"
+      }
+    },
+    "key_iocs": {
+      "type": "array",
+      "description": "Must-find indicators of compromise: hashes, IPs, domains, URLs, device serials/VID-PID, filenames, mutexes, ransom-note names, etc.",
+      "items": {
+        "$ref": "#/$defs/rubric_item"
+      }
+    },
+    "timeline_events": {
+      "type": "array",
+      "description": "Must-find timeline events. Prefer a timestamp + what happened (e.g. '2011-03-12 04:10Z USB mass-storage first connect').",
+      "items": {
+        "$ref": "#/$defs/timeline_item"
+      }
+    },
+    "actor_accounts": {
+      "type": "array",
+      "description": "User/service/machine accounts (and roles) involved — the insider, compromised user, attacker-created account, etc.",
+      "items": {
+        "$ref": "#/$defs/rubric_item"
+      }
+    },
+    "exfil_or_encryption_facts": {
+      "type": "array",
+      "description": "The impact facts: what data left and how (channel, volume, destination) for exfil cases, or what was encrypted/wiped and how (extension, ransom note, family, deleted shadow copies) for ransomware/destructive cases.",
+      "items": {
+        "$ref": "#/$defs/rubric_item"
+      }
+    },
+    "notes": {
+      "type": "string",
+      "description": "Operator notes (e.g. red herrings, known anti-forensics, scoring caveats). Not scored."
+    }
+  },
+  "$defs": {
+    "sift_category": {
+      "type": "string",
+      "description": "One of the 24 ON-BOX Detection-&-Analysis categories of the SIFT IR taxonomy (must mirror findings.schema.json exactly).",
+      "enum": [
+        "Acquisition, Custody & Cross-Platform Synthesis",
+        "Endpoint / Disk & File System",
+        "File Recovery, Carving & Data Reduction",
+        "Memory (RAM) Forensics",
+        "Windows Artifacts - Execution & User Activity",
+        "Windows Registry & Persistence",
+        "Windows Event Logs (EVTX/ETW)",
+        "Linux / Unix Host Forensics",
+        "macOS Forensics",
+        "Browser, Email & Document Forensics",
+        "Web / Perimeter & Server Compromise",
+        "Network Forensics",
+        "Malware Analysis & Triage",
+        "Active Directory & Domain",
+        "Cloud Identity & SaaS",
+        "Cloud IaaS Control-Plane & Data",
+        "Containers, CI/CD & Software Supply Chain",
+        "Attack-Lifecycle Hunting (ATT&CK)",
+        "Impact, Ransomware & Destructive",
+        "Insider Threat, Fraud & Data Theft",
+        "Steganography, Data-Hiding & Encryption",
+        "Threat Hunting & IOC Sweeps",
+        "Targeted Intrusion / APT & Specialized",
+        "Virtualization & Mobile/Embedded"
+      ]
+    },
+    "rubric_item": {
+      "description": "A scored ground-truth item. Either a plain string, or an object that lists acceptable phrasings and (optionally) where the answer key sources it.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": "string",
+              "description": "Canonical text of the expected item.",
+              "minLength": 1
+            },
+            "aliases": {
+              "type": "array",
+              "description": "Other acceptable phrasings (for fuzzy recall scoring).",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            },
+            "weight": {
+              "type": "number",
+              "description": "Relative importance for recall scoring (default 1).",
+              "exclusiveMinimum": 0
+            },
+            "expected_artifact": {
+              "type": "string",
+              "description": "Where in the evidence this should be found (helps the scorer credit a correctly-sourced finding)."
+            },
+            "source": {
+              "type": "string",
+              "description": "Where in the published answer key this item comes from (audit only)."
+            }
+          }
+        }
+      ]
+    },
+    "timeline_item": {
+      "description": "A ground-truth timeline event. Plain string, or an object with an explicit timestamp.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "event"
+          ],
+          "properties": {
+            "timestamp": {
+              "type": "string",
+              "description": "ISO-8601 timestamp (UTC preferred) of the event, if known."
+            },
+            "event": {
+              "type": "string",
+              "description": "What happened at that time.",
+              "minLength": 1
+            },
+            "aliases": {
+              "type": "array",
+              "description": "Other acceptable phrasings of the event.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            },
+            "weight": {
+              "type": "number",
+              "description": "Relative importance for recall scoring (default 1).",
+              "exclusiveMinimum": 0
+            },
+            "source": {
+              "type": "string",
+              "description": "Where in the published answer key this event comes from (audit only)."
+            }
+          }
+        }
+      ]
+    }
+  }
+}

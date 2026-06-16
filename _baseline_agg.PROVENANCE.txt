@@ -1,0 +1,35 @@
+_baseline_agg.json PROVENANCE
+=============================
+This file is a REAL scorer aggregate() output (genuine code paths, real Python
+true-division), but it was produced over SYNTHETIC fixtures via the scorer
+public API (scorer.score_case with scorer-test-style gt()/ioc() helpers), NOT
+over the 3 real bundled cases (VIGIA-REAL-001/002/007).
+
+WHY NOT THE REAL CASES: the real case data lives under scoring/data/ which is
+gitignored ("data/ stays local, NEVER committed" per scoring/.gitignore) AND is
+deliberately kept OFF this VM for blind-eval integrity (scoring/deploy_to_playground.sh
+states answer keys are injected transiently at score time and never land on the VM).
+On this VM the case_inputs survive at /home/ubuntu/cases-from-slack/case{1,2,7}/case{1,2,7}.json
+and the reports survive at /home/ubuntu/find-evil/baseline/protocol-sift/reports/
+VIGIA-REAL-00{1,2,7}_investigation_report.md, but the ground_truth/ answer keys
+(key_iocs / mitre_ttps / verdict) are ABSENT everywhere on the box.
+
+WHAT THIS IS GOOD FOR: it pins the EXACT aggregate() output SCHEMA the builder
+must persist + sanitize. The real CLI to emit it over the 3 cases (once data is
+mounted at scoring/data/) is:  cd scoring && python3 scorer.py --json
+(prints render() then a line "--- JSON ---" then json.dumps({"cases":[...],
+"aggregate": agg}, indent=2, sort_keys=True); the aggregate object is the dict
+to feed sanitize_score_vector).
+
+SCHEMA NOTE (DIFFERS FROM THE SETUP BRIEF): the current 52-test scorer at
+origin/feat/eval-loop tip ab2612e returns 16 keys, not 12:
+  12 INTS: cases, fabrication_count_total, findable_found, findable_total,
+           full_found, full_total, invalid_mitre_total, mitre_emitted_total,
+           mitre_found, mitre_grounded_total, mitre_total, verdicts_emitted
+  4 FLOAT-or-None: findable_recall_micro, full_recall_micro,
+                   mitre_precision_micro, mitre_recall_micro
+The brief listed 9 ints + 3 floats; the scorer has since gained MITRE precision
+(mitre_precision_micro + mitre_grounded_total/mitre_emitted_total/invalid_mitre_total).
+So sanitize_score_vector must FIXED-DECIMAL-format FOUR recalls (None->null),
+not three: each as f"{num/den:.4f}" derived from its verbatim int components
+(precision = mitre_grounded_total/mitre_emitted_total; den 0 -> null).

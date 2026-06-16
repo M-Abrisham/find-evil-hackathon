@@ -1,0 +1,131 @@
+{
+  "matrix": "/Users/mehrnooshabrishamkar/Find Evil Hacketon/OS-Coverage-Matrix.md",
+  "absent_tools_known": [
+    "KAPE / Velociraptor",
+    "Memory Baseliner",
+    "PECmd (Prefetch)",
+    "SrumECmd (SRUM)",
+    "Zeek",
+    "ausearch / aureport (auditd)",
+    "gcloud (Google Cloud SDK)",
+    "mac_apt / mac_apt.py",
+    "oletools (olevba/oledump)",
+    "pandas",
+    "secretsdump / impacket / NTDSXtract",
+    "tshark (standalone)",
+    "vss_carver",
+    "yara (CLI)"
+  ],
+  "playbooks": [
+    {
+      "playbook": "/Users/mehrnooshabrishamkar/Find Evil Hacketon/playbooks/ransomware-destructive.md",
+      "absent_tools_named": [
+        "PECmd (Prefetch)",
+        "SrumECmd (SRUM)",
+        "mac_apt / mac_apt.py",
+        "vss_carver",
+        "yara (CLI)"
+      ],
+      "hit_count": 9,
+      "blocking_hits": 0,
+      "needs_substitution_hits": 0,
+      "substitutions_to_apply": [],
+      "passes_gate": true,
+      "fully_reconciled": true,
+      "hits": [
+        {
+          "tool": "yara (CLI)",
+          "token": "yara",
+          "line": 85,
+          "line_text": "| Carved ransomware-family signatures | `python3-yara` (via `page-brute` / `pe-scanner`) | A YARA-rule match to a known family on the encryptor binary, a dumped region, or pagefile (no `yara` CLI on t",
+          "context": "prose",
+          "substitute": "python3-yara library (matrix §B)",
+          "status": "prose",
+          "blocking": false
+        },
+        {
+          "tool": "mac_apt / mac_apt.py",
+          "token": "mac_apt",
+          "line": 93,
+          "line_text": "| macOS artifacts (FSEvents etc.) | `log2timeline.py` (plist/fseventsd) | macOS file-activity & user history (the box's `mac_apt` is broken — route around it) | macOS |",
+          "context": "prose",
+          "substitute": "plaso + `sqlite3`, routed around broken mac_apt (matrix §D recipe 2)",
+          "status": "prose",
+          "blocking": false
+        },
+        {
+          "tool": "PECmd (Prefetch)",
+          "token": "pecmd",
+          "line": 329,
+          "line_text": "- **Emptied/disabled execution artifacts.** This box has **no Prefetch parser (PECmd absent) and no SRUM parser (SrumECmd absent)** — execution proof must come from 4688 + UserAssist/BAM (`RECmd`/`rip",
+          "context": "prose",
+          "substitute": "plaso `prefetch` (matrix §D recipe 7)",
+          "status": "prose",
+          "blocking": false
+        },
+        {
+          "tool": "SrumECmd (SRUM)",
+          "token": "srumecmd",
+          "line": 329,
+          "line_text": "- **Emptied/disabled execution artifacts.** This box has **no Prefetch parser (PECmd absent) and no SRUM parser (SrumECmd absent)** — execution proof must come from 4688 + UserAssist/BAM (`RECmd`/`rip",
+          "context": "prose",
+          "substitute": "plaso `srum` + `esedbexport` (matrix §D recipe 7)",
+          "status": "prose",
+          "blocking": false
+        },
+        {
+          "tool": "mac_apt / mac_apt.py",
+          "token": "mac_apt",
+          "line": 368,
+          "line_text": "- **macOS (APFS):** TSK 4.11.1 here has limited/no APFS support — `⚠️verify` before relying on `fls`/`fsstat` against APFS. The box's `mac_apt` is **broken** (route around it); use `log2timeline.py` f",
+          "context": "prose",
+          "substitute": "plaso + `sqlite3`, routed around broken mac_apt (matrix §D recipe 2)",
+          "status": "prose",
+          "blocking": false
+        },
+        {
+          "tool": "PECmd (Prefetch)",
+          "token": "pecmd",
+          "line": 438,
+          "line_text": "- **Prefetch / SRUM:** Windows execution-history artifacts — **no parser exists on this SIFT build** (PECmd/SrumECmd absent), so do not rely on them here.",
+          "context": "prose",
+          "substitute": "plaso `prefetch` (matrix §D recipe 7)",
+          "status": "prose",
+          "blocking": false
+        },
+        {
+          "tool": "SrumECmd (SRUM)",
+          "token": "srumecmd",
+          "line": 438,
+          "line_text": "- **Prefetch / SRUM:** Windows execution-history artifacts — **no parser exists on this SIFT build** (PECmd/SrumECmd absent), so do not rely on them here.",
+          "context": "prose",
+          "substitute": "plaso `srum` + `esedbexport` (matrix §D recipe 7)",
+          "status": "prose",
+          "blocking": false
+        },
+        {
+          "tool": "yara (CLI)",
+          "token": "yara",
+          "line": 439,
+          "line_text": "- **python3-yara:** the YARA pattern-matching library (run via `page-brute`/`pe-scanner`) used to match ransomware-family signatures — there is **no `yara` CLI** on this box.",
+          "context": "prose",
+          "substitute": "python3-yara library (matrix §B)",
+          "status": "prose",
+          "blocking": false
+        },
+        {
+          "tool": "vss_carver",
+          "token": "vss_carver",
+          "line": 440,
+          "line_text": "- **vshadowmount / vshadowinfo:** libvshadow tools that list and mount Volume Shadow Copies read-only (the substitute for the absent `vss_carver` on this box).",
+          "context": "prose",
+          "substitute": "`vshadowmount` / `vshadowinfo` (matrix §D recipe 9)",
+          "status": "prose",
+          "blocking": false
+        }
+      ]
+    }
+  ],
+  "all_pass": true,
+  "all_reconciled": true
+}

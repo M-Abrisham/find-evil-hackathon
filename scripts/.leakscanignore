@@ -1,0 +1,19 @@
+# .leakscanignore — whole-file exemptions for leak_scan.py
+#
+# FP class 3: the scanner's OWN test fixtures contain FAKE secrets BY DESIGN
+# (synthetic AWS/GitHub/Slack keys, split-secret reassembly cases, a fake
+# incident report). Self-scanning the test suite + red-team corpus with
+# --staged / --root therefore self-flags these intentional fixtures. Exempt the
+# whole files. Both the build-dir layout (root = leak-scan-build/) and the
+# repo layout (fixtures shipped under scripts/) are covered.
+#
+# Syntax: one glob per line. `path::check.id[,check.id]` would scope to specific
+# checks; a bare glob (used here) whole-file exempts. Comments start with '#'.
+
+# --- build-dir layout (scan root = /home/ubuntu/leak-scan-build) ---
+test_leak_scan.py
+redteam/**
+
+# --- repo layout (scan root = repo top; fixtures live under scripts/) ---
+scripts/test_leak_scan.py
+scripts/redteam/**

@@ -272,9 +272,11 @@ log "ablation lap START rule=$RULE_ID case=$CASE_ID lane=$LANE arm=$ARM rounds=$
 if [ "$AFFECTS_VERDICT_OR_MITRE" -eq 1 ]; then
   log "step 0: verdict/MITRE lane (affects=${AFFECTS_NORM}) -> ENFORCING contract<->scorer drift gate"
   log "step 0: $DRIFT_CMD --contract $DRIFT_CONTRACT --scorer-dir $DRIFT_SCORER_DIR"
-  if ! $DRIFT_CMD --contract "$DRIFT_CONTRACT" --scorer-dir "$DRIFT_SCORER_DIR" \
-        >"$WORKDIR/drift_check.log" 2>&1; then
-    drift_rc=$?
+  $DRIFT_CMD --contract "$DRIFT_CONTRACT" --scorer-dir "$DRIFT_SCORER_DIR" \
+        >"$WORKDIR/drift_check.log" 2>&1
+  drift_rc=$?  # capture IMMEDIATELY after the checker (before any other cmd) so the
+               # abort message shows the real nonzero code, not the if/! test result.
+  if [ "$drift_rc" -ne 0 ]; then
     cat "$WORKDIR/drift_check.log" >&2
     die "contract<->scorer DRIFT detected (exit $drift_rc) on a verdict/MITRE lane — the scorer mirror is stale; a rate delta would be a SCORER ARTIFACT. ABORT (re-sync scorer.py to contract.yaml, then re-run). NOTHING toggled."
   fi

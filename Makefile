@@ -79,4 +79,4 @@ check-contract-scorer-drift:
 	python3 eval/diagnosis/contract_scorer_drift.py --contract protocol-sift/contract/contract.yaml --scorer-dir contract-build/scoring
 
 diagnosis-test:
-	cd eval/diagnosis && python3 -m unittest test_aggregate_failures test_judge_validation test_ablation_runner test_regression_suite test_key_validator test_contract_scorer_drift
+	cd eval/diagnosis && python3 -m unittest test_aggregate_failures test_judge_validation test_ablation_runner test_regression_suite test_key_validator test_contract_scorer_drift test_confirm_keep

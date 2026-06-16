@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic IOC scorer for the VIGIA DFIR cases.
 
-Grades a Protocol SIFT investigation report against a case's ``ground_truth.json``
+Grades a Protocol SIFT investigation report against a case's ``ground_truth.json``  # leak-scan: allow answer_leak.literal
 using **exact-token matching only** — no LLM judge anywhere in this file.
 
 Design rule (the whole point of this harness)
@@ -274,7 +274,8 @@ def verdict_status(report_text: str, gt_verdict: str) -> str:
     ``VERDICT: NON_MALICE`` is never mis-scored as ``MALICE`` and any synonym within a
     class matches. A present-but-wrong-class verdict returns ``"not_emitted"`` — no
     correct verdict was emitted."""
-    token = parse_report_verdict(report_text)
+    # Local var from a parser call (not a secret assignment) — scanner false positive.
+    token = parse_report_verdict(report_text)  # leak-scan: allow secret.assignment
     if token is None:
         return "not_emitted"
     gt_class = _verdict_class(gt_verdict)

@@ -62,6 +62,12 @@ import shlex
 import subprocess
 import sys
 
+# Parity gate (eval/parity_check.py): build_manifest()/gate() are import-clean (guarded by
+# if __name__ == "__main__"). run_blind() refuses to run if the playground is not at production
+# parity, so every measured failure is real. Same-dir import — run_blind.py and parity_check.py
+# both live in eval/, and a script's own dir is on sys.path when invoked as `python3 eval/...`.
+from parity_check import build_manifest, gate
+
 MODEL = os.environ.get("BLIND_MODEL", "opus")          # `claude -p --model opus` = latest Opus
 AGENT_CMD = os.environ.get("BLIND_AGENT", "claude")
 AGENT_ARGS = shlex.split(os.environ.get("BLIND_AGENT_ARGS", ""))
@@ -329,6 +335,24 @@ def _call(system: str, user: str) -> tuple[str, float]:
 
 def run_blind(mount: str, out_path: pathlib.Path, case_id: str, playbook: str = "") -> int:
     _warn_if_protocol_sift_not_installed()
+
+    # PARITY GATE (fail-closed): refuse to run unless the playground is at production parity, so
+    # every measured failure is real. Hard failures abort with exit 3 and write NO findings, unless
+    # PARITY_ALLOW_UNSAFE=1 (a deliberate baseline run); warnings only print. A fingerprint manifest
+    # is written next to --out as <out>.parity.json (parity_overridden flags an escape-hatch run).
+    manifest = build_manifest()
+    hard, warn = gate(manifest)
+    for w in warn:
+        print(f"  parity WARN: {w}", file=sys.stderr)
+    if hard and os.environ.get('PARITY_ALLOW_UNSAFE') != '1':
+        for h in hard:
+            print(f"  PARITY FAIL: {h}", file=sys.stderr)
+        print('PARITY GATE FAILED — refusing to run; no findings written (set PARITY_ALLOW_UNSAFE=1 for a baseline run).', file=sys.stderr)
+        return 3
+    manifest['parity_overridden'] = bool(hard)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.with_suffix(out_path.suffix + '.parity.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+
     mount_p = pathlib.Path(mount)
     if not mount_p.exists():
         print(f"ERROR: mount path does not exist: {mount}", file=sys.stderr)

@@ -39,3 +39,8 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# errlens (advisory error-analysis sensor) runtime outputs
+scoring/errlens_log.jsonl
+scoring/errlens_reports/
+scoring/new_mode_candidates.jsonl

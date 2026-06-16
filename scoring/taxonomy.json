@@ -1,0 +1,187 @@
+{
+  "taxonomy_version": "0.1.0-draft-2026-06-15",
+  "source": "seeded from protocol-sift-reports/ERROR-ANALYSIS-TAXONOMY-DRAFT.md (n=3 case-pairs, partial first cut, NOT saturated). Promotion of any NEW-mode candidate = a human adds a frozen-predicate record here + bumps taxonomy_version + re-stamps taxonomy_sha.",
+  "taxonomy_sha": "7cc0bbc9c5aac6290643ac27d221fc5a78cb0bb1c78e8b41a84829007e258d90",
+  "categories": [
+    {
+      "id": "fabrication",
+      "human_name": "Fabricated / unbacked IOC",
+      "severity_class": "A",
+      "status": "active",
+      "predicate": {
+        "kind": "fabrication_gt0"
+      },
+      "scorer_signals_read": [
+        "fabrication_count"
+      ],
+      "related_rule_ids": [
+        "R3"
+      ],
+      "guard_case": "VIGIA-REAL-001",
+      "open_coding_note": "clean-kind IOC asserted but absent from input; Class-A, investigate at count 1"
+    },
+    {
+      "id": "structured-deliverable-absence",
+      "human_name": "Missing VERDICT / MITRE / IOC schema",
+      "severity_class": "B",
+      "status": "active",
+      "predicate": {
+        "kind": "verdict_not_emitted"
+      },
+      "scorer_signals_read": [
+        "verdict"
+      ],
+      "related_rule_ids": [
+        "deliverable-contract"
+      ],
+      "guard_case": "VIGIA-REAL-001",
+      "open_coding_note": "correct prose but no machine-parseable VERDICT line; the now-fixed top failure"
+    },
+    {
+      "id": "recall-miss",
+      "human_name": "Findable IOC missed",
+      "severity_class": "B",
+      "status": "active",
+      "predicate": {
+        "kind": "recall_miss"
+      },
+      "scorer_signals_read": [
+        "iocs.findable",
+        "iocs.found"
+      ],
+      "related_rule_ids": [],
+      "guard_case": "VIGIA-REAL-002",
+      "open_coding_note": "an IOC present in the input was not reported"
+    },
+    {
+      "id": "bad-case-unfindable",
+      "human_name": "Key asks for an unfindable fact (Branch A / BAD CASE)",
+      "severity_class": "B",
+      "status": "active",
+      "predicate": {
+        "kind": "findability_ceiling"
+      },
+      "scorer_signals_read": [
+        "findable_recall"
+      ],
+      "related_rule_ids": [],
+      "guard_case": "",
+      "open_coding_note": "findable_recall None or a key IOC not findable -> route to Branch A, never write a rule"
+    },
+    {
+      "id": "transparency-regression",
+      "human_name": "Dropped Limitations / self-correction callouts",
+      "severity_class": "B",
+      "status": "active",
+      "predicate": {
+        "kind": "presence_fail"
+      },
+      "scorer_signals_read": [
+        "presence"
+      ],
+      "related_rule_ids": [
+        "R5",
+        "G25"
+      ],
+      "guard_case": "VIGIA-REAL-002",
+      "open_coding_note": "NEW (found by error analysis). presence_scorer is absent on feat/eval-loop so this fires only once presence is wired on josh-pc/VM (dormant until then)"
+    },
+    {
+      "id": "mitre-choice-divergence",
+      "human_name": "Defensible-but-off-key MITRE code",
+      "severity_class": "none",
+      "status": "advisory",
+      "predicate": {
+        "kind": "none"
+      },
+      "scorer_signals_read": [
+        "mitre_recall",
+        "mitre_precision"
+      ],
+      "related_rule_ids": [
+        "mitre.rules"
+      ],
+      "guard_case": "",
+      "open_coding_note": "valid ART-grounded code != key; Phase-3 advisory judge only, never the reward path"
+    },
+    {
+      "id": "provenance-boundary-drift",
+      "human_name": "Case-description metadata imported as evidence",
+      "severity_class": "none",
+      "status": "blind-spot",
+      "predicate": {
+        "kind": "none"
+      },
+      "scorer_signals_read": [],
+      "related_rule_ids": [],
+      "guard_case": "VIGIA-REAL-001",
+      "open_coding_note": "NEW regression; scorer-invisible (value is in-input) -> human/advisory only"
+    },
+    {
+      "id": "well-flagged-inference",
+      "human_name": "Labeled INFERRED domain supplementation",
+      "severity_class": "none",
+      "status": "control",
+      "predicate": {
+        "kind": "none"
+      },
+      "scorer_signals_read": [],
+      "related_rule_ids": [
+        "G18"
+      ],
+      "guard_case": "",
+      "open_coding_note": "not a failure; positive control / human judgment"
+    },
+    {
+      "id": "dual-use-suppression-G24",
+      "human_name": "Dual-use presumption suppresses a true MALICE",
+      "severity_class": "A",
+      "status": "blind-spot",
+      "predicate": {
+        "kind": "verdict_not_emitted"
+      },
+      "scorer_signals_read": [
+        "verdict"
+      ],
+      "related_rule_ids": [
+        "G24"
+      ],
+      "guard_case": "",
+      "open_coding_note": "pre-authored; flip to active when a benign / dual-use case lands (cfreds/G4)"
+    },
+    {
+      "id": "nonmalice-from-absence-G25",
+      "human_name": "NON_MALICE from mere absence",
+      "severity_class": "B",
+      "status": "blind-spot",
+      "predicate": {
+        "kind": "none"
+      },
+      "scorer_signals_read": [
+        "verdict"
+      ],
+      "related_rule_ids": [
+        "G25"
+      ],
+      "guard_case": "",
+      "open_coding_note": "pre-authored; needs a benign case to observe"
+    },
+    {
+      "id": "tool-failure-G31",
+      "human_name": "Tool did not run / silent failure",
+      "severity_class": "B",
+      "status": "blind-spot",
+      "predicate": {
+        "kind": "none"
+      },
+      "scorer_signals_read": [
+        "otel_span_exit"
+      ],
+      "related_rule_ids": [
+        "G31"
+      ],
+      "guard_case": "",
+      "open_coding_note": "needs OTEL spans + a tool-exercising case; pre-authored"
+    }
+  ]
+}

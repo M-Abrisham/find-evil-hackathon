@@ -1,0 +1,12 @@
+# --- Reused dependency (pinned by exact commit; NOT vendored) ----------------
+# Na0S supplies the cost / audit / rate-limit primitives wrapped by
+# src/sift_agent/telemetry.py. Pinned to the exact commit recorded in
+# docs/contribution-table.md.
+na0s @ git+https://github.com/M-Abrisham/Na0S@a8751167db7b67fcbdacdc1196cfc0a140929b94
+
+# Env note: on a box whose system SciPy was built for NumPy 1.x, constrain
+# numpy<1.25 (within Na0S's >=1.24,<3 range) so `import na0s` is warning-free.
+# numpy<1.25
+
+# --- Dev / test only ---------------------------------------------------------
+# pytest

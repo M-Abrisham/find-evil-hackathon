@@ -4,7 +4,7 @@ Pure stdlib, no I/O. Projects the scorer's 16-key aggregate (``scorer.aggregate(
 onto the FOUR gated decision dimensions (each with a direction) plus carried advisory
 fields, and decides KEEP vs REVERT.
 
-DECISION CONTRACT (authoritative):
+DECISION CONTRACT (PER-LAP CANDIDATE -- confirmed only by the RCDP statistical N-round gate):
   GATED dims compare() acts on
     findable_recall_micro   UP    float|None (None iff findable_total==0); None => FAIL
     fabrication_count_total DOWN  int       (eps=0 exact; ANY increase => REVERT)
@@ -126,6 +126,10 @@ def compare(baseline, post, *, eps_recall=0.0):
       deltas   : {dim: {"base":, "post":, "delta":, "direction":, "status":}, ...}
                  for every gated dim, where status in improve|regress|equal|fail.
     """
+    if eps_recall < 0:
+        raise ValueError(
+            "eps_recall must be >= 0 (got %r); a negative tolerance inverts the "
+            "strict-improve test and would let a tie/regression KEEP" % (eps_recall,))
     deltas: dict[str, Any] = {}
     statuses: dict[str, str] = {}
     for dim, direction in GATED_DIMS.items():

@@ -1,4 +1,4 @@
-"""keep_or_revert.py — the decider (roadmap 8.5).
+"""keep_or_revert.py — the per-lap CANDIDATE decider (roadmap 8.5). A KEEP is provisional -- confirm via the RCDP statistical N-round (Wilson + two-proportion) gate before acting; a REVERT may be acted on per-lap.
 
 Three jobs:
   1. decide(baseline_agg, post_agg) -> (decision, reason, deltas)
@@ -275,7 +275,7 @@ def main(argv=None):
     ap.add_argument("--post", required=True,
                     help="post-change aggregate JSON, or @path.json")
     ap.add_argument("--eps-recall", type=float, default=0.0,
-                    help="float-recall tolerance (default 0.0)")
+                    help="float-recall tolerance, must be >= 0 (default 0.0)")
     ap.add_argument("--playbook", default=None,
                     help="playbook .md to revert when --apply and decision==REVERT")
     ap.add_argument("--versions-dir", default=None,
@@ -290,6 +290,9 @@ def main(argv=None):
 
     baseline = _load_json_arg(args.baseline)
     post = _load_json_arg(args.post)
+    if args.eps_recall < 0:
+        print("error: --eps-recall must be >= 0 (negative tolerance would invert the gate)", file=sys.stderr)
+        return 2
     decision, reason, deltas = decide(baseline, post, eps_recall=args.eps_recall)
 
     out = {"decision": decision, "reason": reason, "deltas": deltas}

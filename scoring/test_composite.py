@@ -218,3 +218,25 @@ class CompareTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NegativeEpsGuardTests(unittest.TestCase):
+    """eps_recall < 0 must be rejected (would invert strict-improve -> silent KEEP)."""
+    BASE = {"findable_recall_micro": 1.0, "fabrication_count_total": 0,
+            "verdicts_emitted": 1, "mitre_recall_micro": 0.5}
+
+    def test_negative_eps_rejected_on_tie(self):
+        import composite
+        with self.assertRaises(ValueError):
+            composite.compare(dict(self.BASE), dict(self.BASE), eps_recall=-0.5)
+
+    def test_negative_eps_rejected_on_regression(self):
+        import composite
+        post = dict(self.BASE); post["mitre_recall_micro"] = 0.45
+        with self.assertRaises(ValueError):
+            composite.compare(dict(self.BASE), post, eps_recall=-0.1)
+
+    def test_zero_eps_tie_still_reverts(self):
+        import composite
+        dec, _, _ = composite.compare(dict(self.BASE), dict(self.BASE))
+        self.assertEqual(dec, "REVERT")

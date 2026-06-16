@@ -6,27 +6,22 @@
 # RSA / Slack / Braintrust tokens, split-secret reassembly cases, a fake
 # incident report). Self-scanning that corpus would self-flag the intentional
 # fixtures — a bootstrapping false positive, not a real leak.
-#
 # DO NOT add production code or any SUT (protocol-sift/) config here. Production
 # pattern-constant false positives are handled with narrow inline
 # "# leak-scan: allow <check.id>" comments on the specific line instead, so the
 # rest of the file stays fully scanned.
-#
 # Syntax: one glob per line, relative to repo root. '#' starts a comment.
 
 # The scanner's own unit-test suite (asserts on fake secrets it must detect).
 scripts/test_leak_scan.py
-
 # The scanner's red-team corpus: block_* are SUPPOSED to contain fake secrets;
 # ok_* are negative cases. run_redteam.sh drives these as fixtures.
 scripts/redteam/**
-
 # The drift-check unit test embeds SYNTHETIC verdict-vocabulary tokens
 # (MALICE / NON_MALICE / INCONCLUSIVE / SUSPICIOUS) and fake YAML by design;
 # the scanner mis-reads those test strings as secret assignments. It is a
 # TEST file (like scripts/test_leak_scan.py), so whole-file exempt it.
 eval/diagnosis/test_contract_scorer_drift.py
-
 # Diagnosis Protocol synthetic test fixtures (eval/diagnosis/): synthetic
 # round-score JSONs, fake labeled judge sets, and synthetic IOC values BY
 # DESIGN. They carry no real secrets/keys/ground-truth. Mirrors the existing

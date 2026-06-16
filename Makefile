@@ -1,37 +1,56 @@
-# Repository CI helpers.
+# Repository CI helpers for the Find Evil submission.
 #
-# leak-scan  run the secret-/evidence-leak gate over the staged changeset.
-#            Exits non-zero (CI fail) if any BLOCK finding survives the
-#            allowlist. Run before every commit/push.
-#
-# leak-scan-test  run the scanner's own unit tests + red-team battery
-#                 (proves detection is intact, not just that nothing blocked).
+# Core eval workflow (run from the operator machine):
+#   sync / eval / test / validate / manifests
+# Public-repo safety gates (run before EVERY commit/push):
+#   leak-scan / leak-scan-test / verify-ledger / pre-submit
+# Diagnosis-protocol harness (operator layer, over exported round files):
+#   aggregate / judge-validate / ablate / regression / validate-keys /
+#   check-contract-scorer-drift / diagnosis-test
 
-.PHONY: leak-scan leak-scan-test
+.PHONY: sync eval test manifests validate verify-ledger leak-scan leak-scan-test pre-submit \
+        aggregate judge-validate ablate regression validate-keys check-contract-scorer-drift diagnosis-test
 
+VM=ubuntu@10.104.28.103
+
+# --- core eval workflow ---
+sync:
+	rsync -av --exclude .git --exclude .env ./ $(VM):~/protocol-sift-evals/
+
+eval:
+	ssh $(VM) 'cd ~/protocol-sift-evals && braintrust eval eval_protocol_sift.py'
+
+test:
+	cd scoring && python3 -m unittest discover -v
+	cd trace_enrich && python3 -m unittest discover -v
+
+manifests:
+	ssh $(VM) 'find /home/ubuntu/Downloads -type f | sort' > dataset/manifest.txt
+	ssh $(VM) 'hashdeep -r /home/ubuntu/Downloads' > dataset/hashes.txt
+
+validate:
+	python3 dataset/validate_cases.py
+
+# --- leak / secret / answer-key gate (run before EVERY public-repo commit) ---
 leak-scan:
-	python3 scripts/leak_scan.py --staged
+	python3 scripts/leak_scan.py --staged --root .
 
 leak-scan-test:
 	cd scripts && python3 -m unittest test_leak_scan && bash run_redteam.sh
 
+# Score-ledger integrity gate: non-zero exit on a broken hash chain.
+LEDGER ?= $(HOME)/score-ledger/ledger.jsonl
+verify-ledger:
+	python3 scoring/score_ledger.py --path $(LEDGER) verify
+
+# Run BEFORE committing to this PUBLIC repo: leak gate + chain integrity.
+pre-submit: leak-scan verify-ledger
+	@echo "pre-submit OK: leak-scan clean and score ledger chain intact"
+
 # ---------------------------------------------------------------------------
 # Diagnosis Protocol — operator-side eval tooling (eval/diagnosis/).
-# These run on the JOSH-PC operator layer over EXPORTED round files + locally
-# emitted per-round score JSONs. They NEVER run inside the sealed jail.
-#
-#   aggregate                   #1 per-arm f/n + Wilson CI + two-proportion z + signature clustering
-#   judge-validate              #2 TPR/TNR confusion matrix gating score.py --judge
-#   ablate                      #3 single-artifact ablation lap (parity --expect + render/sync + run_batch + re-score + aggregate)
-#   regression                  #4 monotonic guard-case non-regression gate (BLOCK KEEP on any re-fail)
-#   validate-keys               #5 build-time answer-key supportability gate (refuse the lap on a bad key)
-#   check-contract-scorer-drift #6 HARD-block verdict/MITRE laps when contract.yaml and scorer.py diverge
-#   diagnosis-test              run ALL eval/diagnosis unit tests (SYNTHETIC fixtures only)
-#
-# Variables (override on the command line):
-#   SCORE_DIR  default Desktop/Protocol SIFT Playground Result (the exported round dir on josh-pc)
-#   CASE PREDICATE FLOOR_HI ARM RULE CASE_PATH TOGGLE LANE ROUNDS EXPECT JUDGE_SET BASELINE
-
+# These run on the operator layer over EXPORTED round files + per-round score
+# JSONs. They NEVER run inside the sealed jail.
 SCORE_DIR ?= Desktop/Protocol SIFT Playground Result
 PREDICATE ?= verdict
 FLOOR_HI  ?= 0.10
@@ -40,8 +59,6 @@ LANE      ?= prose
 ROUNDS    ?= 20
 JUDGE_SET ?= eval/diagnosis/fixtures/seed_labeled_set.json
 BASELINE  ?= eval/diagnosis/baseline.json
-
-.PHONY: aggregate judge-validate ablate regression validate-keys check-contract-scorer-drift diagnosis-test
 
 aggregate:
 	python3 eval/diagnosis/aggregate_failures.py --score-dir "$(SCORE_DIR)" --case "$(CASE)" --predicate "$(PREDICATE)" --floor-hi "$(FLOOR_HI)" --json -o "$(SCORE_DIR)/$(CASE)_aggregate.json"

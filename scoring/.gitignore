@@ -1,0 +1,6 @@
+# Real case data stays local — never commit ground truth, case inputs, or reports.
+data/
+
+# Python
+__pycache__/
+*.py[cod]

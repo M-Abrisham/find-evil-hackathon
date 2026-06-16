@@ -47,3 +47,7 @@ ledger.jsonl
 *.ledger.jsonl
 _demo.ledger.jsonl
 _demo_candidate_agg.json
+
+# --- Build artifacts / model caches (never commit) ---
+models/
+*.log.gz

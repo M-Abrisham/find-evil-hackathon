@@ -1,0 +1,2 @@
+a = "AKIAZZ"
+b = "4FAKE7EXAMPLE9"

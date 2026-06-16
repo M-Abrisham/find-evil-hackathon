@@ -1,0 +1,18 @@
+{
+  "cases": 2,
+  "fabrication_count_total": 0,
+  "findable_found": 2,
+  "findable_recall_micro": 1.0,
+  "findable_total": 2,
+  "full_found": 2,
+  "full_recall_micro": 1.0,
+  "full_total": 2,
+  "invalid_mitre_total": 0,
+  "mitre_emitted_total": 0,
+  "mitre_found": 1,
+  "mitre_grounded_total": 0,
+  "mitre_precision_micro": null,
+  "mitre_recall_micro": 0.5,
+  "mitre_total": 2,
+  "verdicts_emitted": 1
+}

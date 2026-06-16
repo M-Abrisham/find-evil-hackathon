@@ -182,6 +182,20 @@ class AblationLapHarness(unittest.TestCase):
             """)
         p = self.bin / "aggregate.sh"; _write_exec(p, body); return "bash %s" % p
 
+    def _drift_stub(self, drift=False):
+        """Stub the contract<->scorer drift checker (tool #6). exit 0 == in sync
+        (lap may proceed); exit 2 == DRIFT detected (HARD-BLOCK). It logs its args
+        so a test can confirm the gate actually ran."""
+        rc = 2 if drift else 0
+        msg = "DRIFT DETECTED" if drift else "IN SYNC"
+        body = textwrap.dedent("""\
+            #!/usr/bin/env bash
+            echo "drift stub: $*" >> "{state}/drift.log"
+            echo "{msg}"
+            exit {rc}
+            """).format(state=self.state, msg=msg, rc=rc)
+        p = self.bin / ("drift_%d.sh" % rc); _write_exec(p, body); return "bash %s" % p
+
     def _toggle_cmd(self):
         return "touch %s" % self.toggle_marker
 
@@ -196,6 +210,7 @@ class AblationLapHarness(unittest.TestCase):
         env["ABLATE_MAKE_CMD"] = over.pop("make") if "make" in over else self._make_stub()
         env["ABLATE_RUNNER_CMD"] = over.pop("runner") if "runner" in over else self._runner_stub()
         env["ABLATE_AGGREGATE_CMD"] = over.pop("aggregate") if "aggregate" in over else self._aggregate_stub()
+        env["ABLATE_DRIFT_CMD"] = over.pop("drift") if "drift" in over else self._drift_stub()
         sc = over.pop("score") if "score" in over else self._score_stub()
         if sc is not None:
             env["ABLATE_SCORE_CMD"] = sc
@@ -340,6 +355,119 @@ class AblationLapHarness(unittest.TestCase):
         self.assertEqual(rec["rounds"], 20)
         self.assertTrue(pathlib.Path(rec["parity_before"]).exists())
         self.assertTrue(pathlib.Path(rec["parity_diff"]).exists())
+        self.assertFalse(self.toggle_marker.exists())
+
+
+class EnforcedContractScorerDriftGate(unittest.TestCase):
+    """FIX 1: the contract<->scorer drift gate (#6) is ENFORCED by the runner (not a
+    manual convention). On a verdict/MITRE lane it RUNS the checker and ABORTS the
+    lap on drift BEFORE any toggle/run/score. Non-verdict/MITRE lanes skip it."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="ablate-drift-"))
+        self.bin = self.tmp / "bin"; self.bin.mkdir()
+        self.work = self.tmp / "work"
+        self.toggle_marker = self.tmp / "toggle.applied"
+        self.state = self.tmp / "state"; self.state.mkdir()
+        (self.tmp / "fake-evidence").mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    # reuse the harness's stub factories
+    _parity_stub = AblationLapHarness._parity_stub
+    _make_stub = AblationLapHarness._make_stub
+    _runner_stub = AblationLapHarness._runner_stub
+    _score_stub = AblationLapHarness._score_stub
+    _aggregate_stub = AblationLapHarness._aggregate_stub
+    _drift_stub = AblationLapHarness._drift_stub
+    _toggle_cmd = AblationLapHarness._toggle_cmd
+    _restore_cmd = AblationLapHarness._restore_cmd
+    _base_env = AblationLapHarness._base_env
+    _run = AblationLapHarness._run
+
+    def _args(self, rule, **kw):
+        a = ["--rule", rule,
+             "--case-id", "synthetic-case-01",
+             "--case", str(self.tmp / "fake-evidence"),
+             "--toggle", self._toggle_cmd(),
+             "--restore", self._restore_cmd(),
+             "--lane", kw.get("lane", "contract"),
+             "--arm", "both",
+             "--rounds", "5",
+             "--workdir", str(self.work)]
+        if "affects" in kw:
+            a += ["--affects", kw["affects"]]
+        # default to dry-run so we exercise the gate without the sealed run
+        if kw.get("dry_run", True):
+            a += ["--dry-run"]
+        return a
+
+    # ---- DRIFT + verdict lane (auto-detected from rule id) -> ABORT ---------
+    def test_drift_on_verdict_lane_aborts_before_toggle(self):
+        env = self._base_env(drift=self._drift_stub(drift=True))
+        r = self._run(self._args("R-VERDICT-DUALUSE-PRESUMED-LEGIT"), env)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("DRIFT detected", r.stderr)
+        self.assertIn("SCORER ARTIFACT", r.stderr)
+        # gate ran...
+        self.assertTrue((self.state / "drift.log").exists(), "drift gate must have run")
+        # ...and aborted BEFORE the toggle was applied (nothing to restore)
+        self.assertFalse(self.toggle_marker.exists())
+        # aborted before the parity snapshot too -> no parity stub run
+        self.assertFalse((self.state / "before_done").exists())
+
+    # ---- DRIFT + MITRE lane (explicit --affects) -> ABORT -------------------
+    def test_drift_on_explicit_mitre_lane_aborts(self):
+        env = self._base_env(drift=self._drift_stub(drift=True))
+        r = self._run(self._args("R-GENERIC-RULE-01", affects="mitre"), env)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("DRIFT detected", r.stderr)
+        self.assertTrue((self.state / "drift.log").exists())
+        self.assertFalse(self.toggle_marker.exists())
+
+    # ---- IN-SYNC + verdict lane -> the gate PASSES and the lap proceeds -----
+    def test_in_sync_on_verdict_lane_proceeds(self):
+        env = self._base_env(drift=self._drift_stub(drift=False))
+        r = self._run(self._args("R-VERDICT-CLASS-01"), env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("drift gate PASSED", r.stderr)
+        self.assertTrue((self.state / "drift.log").exists())
+        # dry-run reached the parity gate (proves it proceeded past the drift gate)
+        self.assertIn("DRY RUN", r.stderr)
+
+    # ---- NON-verdict/MITRE lane (auto) -> gate SKIPPED even if it would drift
+    def test_non_verdict_lane_skips_gate(self):
+        # Inject a drift=TRUE stub: if the gate ran it would ABORT. It must NOT run.
+        env = self._base_env(drift=self._drift_stub(drift=True))
+        r = self._run(self._args("R-DUALUSE-PROCESS-01"), env)  # no verdict/mitre in id
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("drift gate SKIPPED", r.stderr)
+        self.assertFalse((self.state / "drift.log").exists(), "gate must NOT run on a non-verdict/MITRE lane")
+
+    # ---- explicit --affects none overrides a verdict-named rule -> SKIP -----
+    def test_affects_none_overrides_rule_name(self):
+        env = self._base_env(drift=self._drift_stub(drift=True))
+        r = self._run(self._args("R-VERDICT-DUALUSE-01", affects="none"), env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("drift gate SKIPPED", r.stderr)
+        self.assertFalse((self.state / "drift.log").exists())
+
+    # ---- bad --affects token rejected --------------------------------------
+    def test_bad_affects_token_rejected(self):
+        env = self._base_env()
+        r = self._run(self._args("R-X-01", affects="bogus"), env)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--affects tokens must be", r.stderr)
+
+    # ---- verdict lane with NO drift wiring -> hard error (fail-closed) ------
+    def test_verdict_lane_without_drift_wiring_errors(self):
+        # Remove the injected drift cmd AND give no repo root -> cannot resolve.
+        env = self._base_env()
+        env.pop("ABLATE_DRIFT_CMD", None)
+        r = self._run(self._args("R-VERDICT-01"), env)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("drift-gate wiring", r.stderr)
         self.assertFalse(self.toggle_marker.exists())
 
 

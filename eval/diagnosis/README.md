@@ -34,17 +34,17 @@ The diagnosis tools then glob those per-round JSONs.
 |---|------|-------------|------|
 | 1 | `aggregate_failures.py` | `make aggregate` | Per-arm f/n + Wilson 95% CI (not normal-approx) + two-proportion z (sift-vs-bare, pre-vs-post) + same-signature clustering. Drops INVALID rounds first; STOP-flags if >20% lost. |
 | 2 | `judge_validation.py` | `make judge-validate` | TPR/TNR confusion matrix for the `score.py --judge` LLM judge over a frozen labeled borderline-FP set. GATES `--judge`: it stays OFF unless TPR & TNR both >= 0.90. |
-| 3 | `ablation_runner.sh` | `make ablate` | Single-artifact ablation lap: parity snapshot -> toggle ONE lane -> render/sync -> `parity --diff --expect N` (must pass) -> sealed `run_batch` -> re-score -> feed the aggregator. The ONLY mechanism allowed to attribute a delta to one clause. |
+| 3 | `ablation_runner.sh` | `make ablate` | Single-artifact ablation lap: (verdict/MITRE lanes FIRST run the **enforced** contract<->scorer drift gate (#6) and ABORT on drift) -> parity snapshot -> toggle ONE lane -> render/sync -> `parity --diff --expect N` (must pass) -> sealed `run_batch` -> re-score -> feed the aggregator. The ONLY mechanism allowed to attribute a delta to one clause. |
 | 4 | `regression_suite.py` + `guard_cases.json` | `make regression` | Monotonic guard-case non-regression gate. A guard that PASSED in the baseline and now fails => BLOCK KEEP / force REVERT (zero observed regressions, not CI-excludes-0). |
 | 5 | `key_validator.py` | `make validate-keys` | Build-time answer-key supportability gate (expected_artifact-exists-in-mount + IOC findability) => refuse the lap on a bad key. Plus a cross-arm KEY-DOUBT trigger => mandatory human re-adjudication. |
-| 6 | `contract_scorer_drift.py` | `make check-contract-scorer-drift` | HARD-blocks any verdict/MITRE lap when `contract.yaml` (verdict equivalence classes / MITRE) diverges from `scorer.py` (`VERDICT_CLASSES` / `_mitre_satisfied`). |
+| 6 | `contract_scorer_drift.py` | `make check-contract-scorer-drift` | HARD-blocks any verdict/MITRE lap when `contract.yaml` (verdict equivalence classes / MITRE) diverges from `scorer.py` (`VERDICT_CLASSES` / `_mitre_satisfied`). **Enforced automatically** by `ablation_runner.sh` (step 0) on verdict/MITRE lanes, not just a manual check. |
 
-`make diagnosis-test` runs all six unit suites (138 tests, SYNTHETIC fixtures only).
+`make diagnosis-test` runs all six unit suites (164 tests, SYNTHETIC fixtures only).
 
 ## How they wire into the eval loop
 
 ```
-                 contract_scorer_drift (#6)  <-- HARD precondition for verdict/MITRE laps
+                 contract_scorer_drift (#6)  <-- ENFORCED by ablation_runner step 0 on verdict/MITRE laps (ABORT on drift)
                           |
    key_validator (#5)  --gate-->  ablation_runner (#3)  --re-score-->  aggregate_failures (#1)
    (refuse bad key)         (one-change parity gate)        (Wilson CI + two-proportion KEEP signal)
@@ -62,9 +62,16 @@ The diagnosis tools then glob those per-round JSONs.
   behind the `parity --expect N` gate, re-runs at the DECISION tier, re-scores,
   and feeds the aggregator. KEEP iff the two-proportion CI excludes 0 AND
   `make regression` shows zero guard regressions; else REVERT.
-- **Pre-lap guards:** run `make check-contract-scorer-drift` before any
-  verdict/MITRE lap (exit != 0 => abort) and `make validate-keys` before any
-  key-driven lap (UNSUPPORTED => refuse).
+- **Pre-lap guards:** the contract<->scorer drift gate (#6) is **ENFORCED by the
+  ablation runner itself** — it is no longer a manual convention. On a
+  verdict/MITRE lane (`--affects verdict|mitre`, auto-detected from a `--rule` id
+  matching `verdict`/`mitre`), `ablation_runner.sh` RUNS
+  `contract_scorer_drift.py` as step 0 and HARD-ABORTS the lap (nonzero, before
+  any toggle/deploy/run/score) on drift — so a verdict/MITRE rate delta can never
+  be measured against a stale scorer mirror. Non-verdict/MITRE lanes skip it.
+  (`make check-contract-scorer-drift` remains available to run the gate
+  standalone.) Run `make validate-keys` before any key-driven lap (UNSUPPORTED =>
+  refuse).
 - **Judge:** `score.py --judge` is gated. Default freeze posture is judge OFF;
   it only moves a score when `--judge-validation <passing artifact>` (or the
   `JUDGE_VALIDATION_ARTIFACT` env var) authorizes it. The deterministic

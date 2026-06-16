@@ -33,6 +33,15 @@
 #   RUNNER_CMD        default: sudo <playground>/run_batch.sh
 #   SCORE_CMD         default: (operator re-score hook; see --score-cmd)
 #   AGGREGATE_CMD     default: python3 <eval>/diagnosis/aggregate_failures.py
+#   DRIFT_CMD         default: python3 <eval>/diagnosis/contract_scorer_drift.py
+#
+# ENFORCED CONTRACT<->SCORER DRIFT GATE (tool #6): when the toggled lane affects
+# the VERDICT or MITRE rules, this runner RUNS the drift check and ABORTS the lap
+# (nonzero, before any toggle/run/score) on drift — a verdict/MITRE rate delta
+# measured against a stale scorer mirror would be a SCORER ARTIFACT, not a real
+# effect. Whether a lane is verdict/MITRE is taken from --affects (default: auto-
+# detected from the --rule id matching verdict|mitre, case-insensitive). Non-
+# verdict/MITRE toggles skip the gate entirely.
 #
 # stdlib / coreutils only. No python beyond the injected tools.
 # =============================================================================
@@ -51,6 +60,9 @@ MAKE_CMD="${ABLATE_MAKE_CMD:-}"
 RUNNER_CMD="${ABLATE_RUNNER_CMD:-}"
 SCORE_CMD="${ABLATE_SCORE_CMD:-}"        # optional; if empty, scoring step is skipped (warned)
 AGGREGATE_CMD="${ABLATE_AGGREGATE_CMD:-}"
+DRIFT_CMD="${ABLATE_DRIFT_CMD:-}"        # contract<->scorer drift checker (tool #6)
+DRIFT_CONTRACT="${ABLATE_DRIFT_CONTRACT:-}"   # path to contract.yaml (default: repo)
+DRIFT_SCORER_DIR="${ABLATE_DRIFT_SCORER_DIR:-}"  # dir holding scorer.py (default: repo)
 
 # ---- cli ---------------------------------------------------------------------
 RULE_ID="" CASE_ID="" CASE_PATH="" ARM="both" ROUNDS=5 EXPECT=1
@@ -59,6 +71,7 @@ TOGGLE_CMD=""                  # operator-supplied: apply the ONE artifact chang
 RESTORE_CMD=""                 # operator-supplied: undo it (idempotent). If empty, derived from git.
 WORKDIR=""                     # where snapshots/score JSONs land
 BASELINE_AGG=""                # optional: path to the pre-change aggregate JSON to delta against
+AFFECTS=""                     # verdict|mitre|verdict,mitre|none|auto (default auto from --rule)
 DRY_RUN=0
 
 usage(){ cat >&2 <<EOF
@@ -79,6 +92,10 @@ COMMON:
   --restore '<cmd>'    shell cmd that undoes the toggle (default: git checkout the lane source)
   --workdir <dir>      snapshot + score output dir (default: ./ablation-<rule>-<ts>)
   --baseline <agg.json> baseline aggregate to delta against (optional)
+  --affects <v>        verdict|mitre|verdict,mitre|none|auto (default auto: detect
+                       from the --rule id). If the lane affects VERDICT or MITRE,
+                       the contract<->scorer drift gate (#6) is RUN and the lap
+                       ABORTS on drift BEFORE toggling. none/auto-no-match skips it.
   --dry-run            print the plan, run parity+diff+restore only, skip sealed run+score
   -h|--help
 
@@ -102,6 +119,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --restore)  RESTORE_CMD="${2:-}"; shift;;
   --workdir)  WORKDIR="${2:-}"; shift;;
   --baseline) BASELINE_AGG="${2:-}"; shift;;
+  --affects)  AFFECTS="${2:-}"; shift;;
   --dry-run)  DRY_RUN=1;;
   -h|--help)  usage 0;;
   *) die "unknown arg: $1 (try --help)";;
@@ -116,6 +134,37 @@ case "$ARM"  in sift|bare|both) : ;; *) die "--arm must be sift|bare|both";; esa
 case "$EXPECT" in ''|*[!0-9]*) die "--expect must be a non-negative integer";; esac
 case "$ROUNDS" in ''|*[!0-9]*) die "--rounds must be a positive integer";; esac
 [ "$ROUNDS" -ge 1 ] || die "--rounds must be >= 1"
+
+# ---- resolve which rule families this lane affects (drift-gate trigger) ------
+# AFFECTS may be: verdict | mitre | verdict,mitre | none | auto | "" (== auto).
+# auto/"" => infer from the --rule id (case-insensitive match on verdict|mitre).
+case "$AFFECTS" in
+  ''|auto)
+    AFFECTS_NORM=""
+    rl="$(printf '%s' "$RULE_ID" | tr '[:upper:]' '[:lower:]')"
+    case "$rl" in *verdict*) AFFECTS_NORM="verdict";; esac
+    case "$rl" in *mitre*) AFFECTS_NORM="${AFFECTS_NORM:+$AFFECTS_NORM,}mitre";; esac
+    ;;
+  none)
+    AFFECTS_NORM=""
+    ;;
+  *)
+    # explicit: validate every comma-token is verdict|mitre|none
+    AFFECTS_NORM=""
+    _IFS_SAVE="$IFS"; IFS=','
+    for tok in $AFFECTS; do
+      tok="$(printf '%s' "$tok" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
+      case "$tok" in
+        verdict) AFFECTS_NORM="${AFFECTS_NORM:+$AFFECTS_NORM,}verdict";;
+        mitre)   AFFECTS_NORM="${AFFECTS_NORM:+$AFFECTS_NORM,}mitre";;
+        none|'') : ;;
+        *) IFS="$_IFS_SAVE"; die "--affects tokens must be verdict|mitre|none|auto (got '$tok')";;
+      esac
+    done
+    IFS="$_IFS_SAVE"
+    ;;
+esac
+case "$AFFECTS_NORM" in *verdict*|*mitre*) AFFECTS_VERDICT_OR_MITRE=1;; *) AFFECTS_VERDICT_OR_MITRE=0;; esac
 
 # resolve the make target for the lane (Stage 4.1 step 2 deploy rule)
 case "$LANE" in
@@ -140,6 +189,17 @@ if [ -z "$RUNNER_CMD" ]; then
 fi
 if [ -z "$AGGREGATE_CMD" ] && [ -n "$EVAL_DIR" ]; then
   AGGREGATE_CMD="python3 $EVAL_DIR/diagnosis/aggregate_failures.py"
+fi
+
+# drift gate wiring (tool #6) — only required when the lane is verdict/MITRE
+if [ "$AFFECTS_VERDICT_OR_MITRE" -eq 1 ]; then
+  [ -n "$EVAL_DIR" ] || EVAL_DIR="${REPO_ROOT:+$REPO_ROOT/eval}"
+  if [ -z "$DRIFT_CMD" ]; then
+    [ -n "$EVAL_DIR" ] || die "verdict/MITRE lane but no drift-gate wiring: set ABLATE_DRIFT_CMD or ABLATE_REPO_ROOT/ABLATE_EVAL_DIR"
+    DRIFT_CMD="python3 $EVAL_DIR/diagnosis/contract_scorer_drift.py"
+  fi
+  [ -n "$DRIFT_CONTRACT" ]   || DRIFT_CONTRACT="${REPO_ROOT:+$REPO_ROOT/protocol-sift/contract/contract.yaml}"
+  [ -n "$DRIFT_SCORER_DIR" ] || DRIFT_SCORER_DIR="${REPO_ROOT:+$REPO_ROOT/contract-build/scoring}"
 fi
 
 # ---- workdir -----------------------------------------------------------------
@@ -203,6 +263,26 @@ assert_parity_diff(){
 # LAP
 # ============================================================================
 log "ablation lap START rule=$RULE_ID case=$CASE_ID lane=$LANE arm=$ARM rounds=$ROUNDS expect=$EXPECT"
+
+# 0. ENFORCED contract<->scorer DRIFT GATE (tool #6). MANDATORY when the lane
+#    affects VERDICT or MITRE: a rate delta measured against a stale scorer
+#    mirror would be a SCORER ARTIFACT, not a real rule effect. Runs BEFORE any
+#    toggle/deploy/run/score; nonzero from the checker => HARD ABORT. Non-
+#    verdict/MITRE toggles skip this entirely (AFFECTS_VERDICT_OR_MITRE==0).
+if [ "$AFFECTS_VERDICT_OR_MITRE" -eq 1 ]; then
+  log "step 0: verdict/MITRE lane (affects=${AFFECTS_NORM}) -> ENFORCING contract<->scorer drift gate"
+  log "step 0: $DRIFT_CMD --contract $DRIFT_CONTRACT --scorer-dir $DRIFT_SCORER_DIR"
+  if ! $DRIFT_CMD --contract "$DRIFT_CONTRACT" --scorer-dir "$DRIFT_SCORER_DIR" \
+        >"$WORKDIR/drift_check.log" 2>&1; then
+    drift_rc=$?
+    cat "$WORKDIR/drift_check.log" >&2
+    die "contract<->scorer DRIFT detected (exit $drift_rc) on a verdict/MITRE lane — the scorer mirror is stale; a rate delta would be a SCORER ARTIFACT. ABORT (re-sync scorer.py to contract.yaml, then re-run). NOTHING toggled."
+  fi
+  cat "$WORKDIR/drift_check.log" >&2
+  log "step 0: drift gate PASSED — scorer mirrors the contract; lap may proceed."
+else
+  log "step 0: lane does not affect verdict/MITRE (affects=${AFFECTS_NORM:-none}) -> drift gate SKIPPED."
+fi
 
 # 1. snapshot BEFORE (this also HARD-GATES: right host / CLAUDE.md present / skills / no API key)
 log "step 1: parity snapshot BEFORE -> $BEFORE"

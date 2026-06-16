@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "set_id": "borderline-fp-seed-v0",
+  "frozen": false,
+  "note": "SYNTHETIC SEED ONLY. Every item is gold=TO_BE_LABELED on purpose: a human operator on josh-pc must adjudicate each one against the REAL rubric before this set may validate the judge. We do NOT ship fabricated gold labels. The 'finding' / 'rubric' text below is invented borderline-FP material (made-up host/process/IP strings) so the file carries zero real case data and trips no leak gate. Target frozen set size for a real validation run: ~50-100 items. To grow it, append items in this exact shape, label gold as 'supported' or 'unsupported', set frozen=true, and bump set_id.",
+  "items": [
+    {
+      "id": "bfp-seed-001",
+      "finding": "powershell.exe spawned with -EncodedCommand from a scheduled task; treated as benign maintenance script",
+      "rubric": {
+        "attack_type": "credential_access",
+        "process_execution": ["lsass memory access via comsvcs MiniDump"],
+        "persistence": ["scheduled task 'WinUpdate' running encoded PowerShell"],
+        "network": []
+      },
+      "gold": "TO_BE_LABELED",
+      "rationale": "Borderline: rubric names a scheduled task with encoded PowerShell; is the finding the SAME fact (supported) or a different benign read (unsupported)? Human must decide against the real evidence."
+    },
+    {
+      "id": "bfp-seed-002",
+      "finding": "outbound TLS to 198.51.100.7:443 flagged as normal CDN traffic",
+      "rubric": {
+        "attack_type": "command_and_control",
+        "process_execution": [],
+        "persistence": [],
+        "network": ["C2 beacon to 198.51.100.7 every 60s"]
+      },
+      "gold": "TO_BE_LABELED",
+      "rationale": "Same IP appears in rubric C2 bucket but the finding calls it benign — supported-fact-with-wrong-spin vs genuinely-different-claim is a human call."
+    },
+    {
+      "id": "bfp-seed-003",
+      "finding": "rundll32 loading a DLL from C:\\Users\\Public\\ flagged as a printer driver",
+      "rubric": {
+        "attack_type": "defense_evasion",
+        "process_execution": ["rundll32 proxy-exec of payload from Public folder"],
+        "persistence": [],
+        "network": []
+      },
+      "gold": "TO_BE_LABELED",
+      "rationale": "Paraphrase of a real rubric item (rescue) or a new benign claim the rubric never makes (keep FP)? Human adjudication required."
+    },
+    {
+      "id": "bfp-seed-004",
+      "finding": "new local admin account 'svc-helpdesk' created, attributed to routine onboarding",
+      "rubric": {
+        "attack_type": "persistence",
+        "process_execution": [],
+        "persistence": ["rogue local admin account created post-exploit"],
+        "network": []
+      },
+      "gold": "TO_BE_LABELED",
+      "rationale": "Account-creation fact overlaps rubric but the account NAME differs; supportability hinges on whether the rubric item is account-agnostic. Human call."
+    },
+    {
+      "id": "bfp-seed-005",
+      "finding": "USB mass-storage VID_FFFF&PID_0000 insertion noted as a known company asset",
+      "rubric": {
+        "attack_type": "exfiltration",
+        "process_execution": [],
+        "persistence": [],
+        "network": [],
+        "exfiltration": ["data staged to removable USB device prior to exfil"]
+      },
+      "gold": "TO_BE_LABELED",
+      "rationale": "Removable-media event present in rubric; is THIS device the staging device (supported) or an unrelated benign asset (unsupported)? Human must verify against artifacts."
+    }
+  ]
+}

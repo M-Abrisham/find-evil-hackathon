@@ -1,0 +1,112 @@
+# ============================================================================
+# Protocol SIFT — DELIVERABLE CONTRACT  ·  SINGLE SOURCE OF TRUTH
+# ----------------------------------------------------------------------------
+# Edit THIS file for any new finding on Verdict / IOC / MITRE, then run:
+#     make render      # regenerate the contract text in global/CLAUDE.md
+#     make sync        # deploy to ~/.claude so the next run uses it
+# Never hand-edit the generated contract prose in global/CLAUDE.md — it is
+# overwritten from here every time you render.
+# ============================================================================
+version: 2
+
+verdict:
+  # The report MUST end with ONE token from `vocabulary`, qualified by confidence
+  # PER DIMENSION. The deterministic scorer word-matches this token against the
+  # case answer key, so these strings MUST match the answer-key verdict values.
+  vocabulary:
+    - token: MALICE
+      meaning: Artifacts support malicious / incriminating activity.
+    - token: NON_MALICE
+      meaning: Artifacts show the activity is non-malicious / lawful.
+    - token: INCONCLUSIVE
+      meaning: Artifacts are insufficient to decide.
+  confidence_levels: [HIGH, MODERATE, LOW]
+  dimensions: [act, attribution]      # a strong act can pair with weak attribution
+  rules:
+    - Emit exactly one token from the vocabulary.
+    - Always attach per-dimension confidence; never collapse to an unqualified yes/no.
+    - Assert MALICE or NON_MALICE only when artifacts support it; otherwise INCONCLUSIVE.
+    - The verdict is the LAST section of the report.
+    - >-
+      Maliciousness is determined by BEHAVIOR + CONTEXT, never by a tool's or file's
+      name. A tool's mere presence is an investigative lead, not a verdict.
+    - >-
+      Identity before labeling: resolve a binary/service/account's identity (full path,
+      signature, hash, or known-good baseline) BEFORE applying any malice label.
+      Dual-use, administrative, IR, and built-in tools (e.g. procdump, PsExec, certutil,
+      net.exe, powershell.exe, wmic.exe, AV engines, and the agent's own tooling) are
+      PRESUMED LEGITIMATE until anomalous context is positively evidenced — an unexpected
+      path, parent, account, timing, or argument set, or corroborating malicious activity
+      tied to the same artifact.
+    - >-
+      Do NOT assert MALICE on a tool name, file name, or single anomaly alone. When the
+      only signal is a dual-use tool's presence and context is unresolved, keep the act
+      dimension INCONCLUSIVE (or LOW confidence) and the finding INSUFFICIENT_EVIDENCE —
+      never guess a verdict to resolve it. A hedged or INCONCLUSIVE verdict is a correct
+      outcome, not a failure.
+    - >-
+      NON_MALICE requires POSITIVE benign corroboration — an artifact that affirmatively
+      shows the activity was lawful / expected / known-good. The mere ABSENCE of malicious
+      artifacts, or empty / zero-result / "clean" tool output, is NOT evidence of innocence.
+      Absence with no positive benign signal is INCONCLUSIVE, never NON_MALICE.
+    - >-
+      Quote before you claim: every literal you assert (path, hash, timestamp, IP, command,
+      account) MUST appear verbatim in a cited tool receipt (ART-id or the exact tool output
+      line) before it enters the report. If you cannot quote it, you cannot claim it.
+  # Semantic equivalence classes for SCORING (synonym token lists). The scorer maps the
+  # answer-key verdict AND the report's `VERDICT:` token to a class and matches on the
+  # class — so wording can flex and `NON_MALICE` is never misread as `MALICE`.
+  # (The scorer mirrors this in scoring/scorer.py:VERDICT_CLASSES; keep the two in sync.)
+  equivalence_classes:
+    malicious:     [MALICE, MALICIOUS]
+    non_malicious: [NON_MALICE, NONMALICE, BENIGN]
+    inconclusive:  [INCONCLUSIVE, INDETERMINATE, UNKNOWN]
+
+ioc:
+  # Every indicator stated in the report goes in ONE table. `types` are the
+  # scorer's taxonomy; write each Value in the form the scorer normalizes to
+  # (the weakest correct form) so a correct finding is never mangled.
+  confidence_vocab: [CONFIRMED, INFERRED, UNCERTAIN]
+  columns: [Type, Value, Confidence]
+  types:
+    - {type: email,        value_form: lowercase}
+    - {type: file_hash,    value_form: "lowercase hex, no 0x / colons / spaces"}
+    - {type: ip_address,   value_form: "dotted quad, exact (note CIDR ranges separately)"}
+    - {type: mac_address,  value_form: "colon- or hyphen-separated hex"}
+    - {type: windows_sid,  value_form: "UPPERCASE  S-1-5-..."}
+    - {type: file_path,    value_form: "as-seen (Windows backslashes are fine)"}
+    - {type: hostname,     value_form: as-seen}
+    - {type: username,     value_form: as-seen}
+  rules:
+    - List ONLY indicators whose value appears in the evidence you were given. Never invent.
+    - One row per indicator; if a value is unknown or absent, omit the row (do not guess).
+    - >-
+      Never normalize, reformat, complete, translate, or guess a value. Copy each literal
+      (path, hash, timestamp, IP, command, account) byte-for-byte from the cited tool
+      output. The only formatting allowed is the documented value_form above; if a value is
+      not in output exactly as you would write it, you may not write it.
+
+mitre:
+  framework: MITRE ATT&CK (Enterprise)
+  columns: [Technique, T-code, Evidencing artifact]
+  code_format: "Txxxx or Txxxx.yyy  (plain text, e.g. T1040, T1595.001)"
+  rules:
+    - Map ONLY techniques you actually observed in the artifacts.
+    - Every row MUST cite the evidencing artifact (ART-id or tool output).
+    - Never emit a T-code you cannot tie to evidence (no recall-padding).
+    # F4 — real-id validity (key-independent; mirrors scoring/scorer.py:mitre_validity)
+    - >-
+      Every T-code MUST be a real MITRE ATT&CK Enterprise technique id (a valid
+      Txxxx or Txxxx.yyy that exists in the framework); never emit a malformed,
+      truncated, or invented code.
+    # F3 — one-directional parent<->sub credit (documents scoring/scorer.py:_mitre_satisfied)
+    - >-
+      Map at the MOST SPECIFIC level your evidence supports. A sub-technique
+      (Txxxx.yyy) entails its parent (Txxxx): if the evidence shows the specific
+      sub-technique, cite the sub — it is automatically credited for the parent
+      too. Do NOT emit a bare parent when your evidence pins a specific sub, and
+      never pad with a sub-technique you cannot evidence just to be specific.
+    - >-
+      A sibling sub-technique is NOT a match for a different sibling (e.g.
+      T1585.002 does not stand in for T1585.001); cite the exact technique you
+      evidenced, not an adjacent one.
